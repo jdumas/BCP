@@ -4,7 +4,7 @@
 #include "CGAL/CGAL_Mesh.h"
 #include "CGAL/CGAL_Macros.h"
 #include "Utils/GMM_Macros.h"
-#include "utils/STL_Macros.h"
+#include "Utils/STL_Macros.h"
 
 typedef complex<double> Complex;
 

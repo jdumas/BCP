@@ -1,26 +1,30 @@
-import os
 import time
-from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import numpy as np
 import igl
 import torch
 import scipy.io as sio
-from subprocess import Popen, PIPE, TimeoutExpired
+
+from GIF_and_CM.device import DEVICE
+from process_utils import run_native
 
 TIMEOUT_SECONDS = 300
 
+
 def save_data_for_GIF(vertices, faces, cache_path, edge_lengths=None):
-    cur_time = datetime.now().strftime("%Y%m%d%H%M%S")
-    tmp_obj_file = cache_path + "/" + cur_time + ".obj"
-    igl.write_obj(tmp_obj_file, vertices, faces)
-    edge_lengths_mat_file = '""'
+    cache = Path(cache_path).resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    prefix = cache / uuid4().hex
+    source = str(prefix) + ".obj"
+    igl.write_triangle_mesh(source, vertices, faces)
+    lengths = ""
     if edge_lengths is not None:
-        dict1 = {"edge_lengths": edge_lengths.astype(np.float64)}
-        edge_lengths_mat_file = cache_path + "/" + cur_time + "_edge_lengths.mat"
-        sio.savemat(edge_lengths_mat_file, dict1)
-    final_GIF_res_path = cache_path + "/" + cur_time + "GIF_UVs.mat"
-    return tmp_obj_file, final_GIF_res_path, edge_lengths_mat_file
+        lengths = str(prefix) + "_edge_lengths.mat"
+        sio.savemat(lengths, {"edge_lengths": edge_lengths.astype(np.float64)})
+    return source, str(prefix) + "_uvs.mat", lengths
 
 
 def run_GIF(
@@ -36,60 +40,24 @@ def run_GIF(
     edge_lengths=None,
     allow_IDT_fix=False,
 ):
-    tmp_obj_file, final_GIF_res_path, edge_lengths_mat_file = save_data_for_GIF(vertices, faces, cache_path, edge_lengths)
-    exe_file_dir, exe_file_name = exe_path.rsplit("/", 1)
-    if allow_IDT_fix:
-        cmdline = f"{exe_file_name} {tmp_obj_file} {final_GIF_res_path} True False False {interior_faces} {boundary_segment_size} {curvature_meta_vertices_rate} {outer_termination_condition_rate} {energy_related_termination_condition} {edge_lengths_mat_file}"
-        p = Popen(
-            "cmd /c " + cmdline,
-            cwd=exe_file_dir,
-            shell=True,
-            stdout=PIPE,
-            stderr=PIPE,
-        )
-        try:
-            stdout, stderr = p.communicate(timeout=TIMEOUT_SECONDS)
-        except TimeoutExpired:
-            # Handle timeout
-            print("Command timed out. Terminating the process.")
-            p.terminate()  # Terminate the process
-        res_GIF = sio.loadmat(final_GIF_res_path)
-        time_consumption = res_GIF["parametersMatrix"][4, 0]
-    else:
-        # run GIF with regular MVC fix
-        cmdline = f"{exe_file_name} {tmp_obj_file} {final_GIF_res_path} False True True {interior_faces} {boundary_segment_size} {curvature_meta_vertices_rate} {outer_termination_condition_rate} {energy_related_termination_condition} {edge_lengths_mat_file}"
-        p = Popen("cmd /c " + cmdline, cwd=exe_file_dir, shell=True, stdout=PIPE, stderr=PIPE)
-        try:
-            stdout, stderr = p.communicate(timeout=TIMEOUT_SECONDS)
-        except TimeoutExpired:
-            # Handle timeout
-            print("Command timed out. Terminating the process.")
-            p.terminate()  # Terminate the process
-        res_GIF = sio.loadmat(final_GIF_res_path)
-        time_consumption = res_GIF["parametersMatrix"][4, 0]
-    uvs = res_GIF["uvs_ordered"]
-    flipsData = res_GIF["flipsData"]
-    IDT_stats = res_GIF["IDT_outputs"].reshape(-1)
-    edge_compatibility_data = (
-        res_GIF["parametersMatrix"][15, 0],
-        res_GIF["parametersMatrix"][16, 0],
-        res_GIF["parametersMatrix"][17, 0],
-        res_GIF["parametersMatrix"][18, 0],
-    )
-    averaged_edge_lengths = res_GIF["mAverageEdgeLengths"]
-    os.remove(tmp_obj_file)
-    if edge_lengths_mat_file != '""':
-        os.remove(edge_lengths_mat_file)
-    os.remove(final_GIF_res_path)
-    # in case we run IDT fix, flips_count_before_fix represents wheather the method worked on the IDT model without the MVC fix
-    return [
-        uvs,
-        flipsData,
-        IDT_stats,
-        time_consumption,
-        edge_compatibility_data,
-        averaged_edge_lengths
-    ]
+    Path(cache_path).mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="gif-", dir=cache_path) as work:
+        source, result, lengths = save_data_for_GIF(vertices, faces, work, edge_lengths)
+        flags = ["True", "False", "False"] if allow_IDT_fix else ["False", "True", "True"]
+        run_native(exe_path, [
+            source, result, *flags, interior_faces, boundary_segment_size,
+            curvature_meta_vertices_rate, outer_termination_condition_rate,
+            energy_related_termination_condition, lengths,
+        ], TIMEOUT_SECONDS)
+        data = sio.loadmat(result)
+        return [
+            data["uvs_ordered"],
+            data["flipsData"],
+            data["IDT_outputs"].reshape(-1),
+            data["parametersMatrix"][4, 0],
+            tuple(data["parametersMatrix"][i, 0] for i in range(15, 19)),
+            data["mAverageEdgeLengths"],
+        ]
 
 
 def compute_edges_vectors(vertices, faces):
@@ -114,7 +82,7 @@ def compute_edges_vectors(vertices, faces):
 
 
 def compute_EL_from_metric_tensors(metric_tensors, vertices, faces, local_bases=None):
-    edges_vectors = torch.from_numpy(compute_edges_vectors(vertices, faces)).to("cuda:0")
+    edges_vectors = torch.from_numpy(compute_edges_vectors(vertices, faces)).to(DEVICE)
     if local_bases is not None:
         edge_vectors_projected = torch.einsum(
             "abc, acd->abd", local_bases[:, :2, :], edges_vectors.transpose(2, 1)
@@ -150,28 +118,12 @@ def compute_UVs_from_metric_tensors_GIF(
     assert compute_triangle_inequality_satisfying_rate(edge_lengths) == 1, (
         "Triangle inequality is not satisfied after fixing the predicted metric tensor!"
     )
-    i = 0
-    while True:
-        i += 1
-        try:
-            res_GIF = run_GIF(
-                vertices,
-                faces,
-                exe_path,
-                cache_path,
-                interior_faces,
-                boundary_segment_size,
-                curvature_meta_vertices_rate,
-                outer_termination_condition_rate,
-                energy_related_termination_condition,
-                edge_lengths.cpu().numpy(),
-                allow_IDT_fix,
-            )
-            break
-        except Exception as e:
-            print(f"Exception {e}")
-            print(f"{i}th attempt to run GIF failed")
-            continue
+    res_GIF = run_GIF(
+        vertices, faces, exe_path, cache_path, interior_faces,
+        boundary_segment_size, curvature_meta_vertices_rate,
+        outer_termination_condition_rate, energy_related_termination_condition,
+        edge_lengths.cpu().numpy(), allow_IDT_fix,
+    )
 
     res_GIF[3] = res_GIF[3] + edge_lengths_computation_time
     return res_GIF

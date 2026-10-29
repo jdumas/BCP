@@ -9,6 +9,7 @@
 #include <numeric>
 #include <vector>
 #include <iostream>
+#include <cstdlib>
 #include <CGAL/Exact_predicates_exact_constructions_kernel.h>
 #include <CGAL/Polygon_2.h>
 #include <CGAL/intersections.h>
@@ -20,6 +21,16 @@
 using namespace Eigen;
 using namespace std;
 
+// Quote filenames passed to the numerical-script interpreter, rather than
+// treating apostrophes in a filename as executable script syntax.
+static std::string matlabStringLiteral(const std::string& value) {
+	std::string quoted = "'";
+	for (char c : value) {
+		if (c == '\n' || c == '\r') throw std::runtime_error("Newlines in MAT filenames are not supported");
+		quoted += c == '\'' ? "''" : std::string(1, c);
+	}
+	return quoted + "'";
+}
 
 using K = CGAL::Exact_predicates_exact_constructions_kernel;
 using FT = K::FT;
@@ -170,6 +181,23 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 {
 	std::string cmd = "clear;";
 	MatlabInterface::GetEngine().EvalToCout(cmd.c_str());
+	// Pass the policy explicitly: a Windows MATLAB COM server may predate this
+	// process and therefore not inherit BCP_GIF_DEVICE from its environment.
+	const char* gpuMode = std::getenv("BCP_GIF_DEVICE");
+	if (!gpuMode) gpuMode = "auto";
+	auto& engine = MatlabInterface::GetEngine();
+	if (engine.SetEngineStringArray("BCP_GPU_MODE", 1, &gpuMode) != 0)
+		throw std::runtime_error("Cannot set GIF GPU policy");
+	const char* evaluator = std::getenv("BCP_GIF_BACKEND");
+	if (!evaluator) evaluator = "auto";
+	if (engine.SetEngineStringArray("BCP_EVAL_BACKEND", 1, &evaluator) != 0)
+		throw std::runtime_error("Cannot set GIF evaluator backend");
+	std::cout << engine.EvalToString("[BCP_USE_GPU, BCP_EVAL_BACKEND] = bcp_compute_policy(BCP_GPU_MODE, BCP_EVAL_BACKEND);", false);
+	double useGPU = 0;
+	if (engine.GetEngineRealMatrix("BCP_USE_GPU", 1, 1, &useGPU) != 0)
+		throw std::runtime_error("GIF GPU selection failed; check the numerical runtime diagnostics");
+	engine.Eval("GIF.useGPU = logical(BCP_USE_GPU); GIF.computeBackend = BCP_EVAL_BACKEND; clear BCP_GPU_MODE BCP_USE_GPU BCP_EVAL_BACKEND;");
+	std::cout << "GIF compute device: " << (useGPU != 0 ? "gpu" : "cpu") << "\n";
 	mNumInternalFaces = interior_faces;
 	mSegSize = boundary_segment_size;
 	mPercentCurvatureMeta = curvature_meta_vertices_rate;
@@ -329,7 +357,7 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 	MatlabGMMDataExchange::SetEngineDenseMatrix("flipsData", mFlipsData);
 	MatlabGMMDataExchange::SetEngineDenseMatrix("mAverageEdgeLengths", mAverageEdgeLengths);
 	
-	std::string cmd_save_uv = "save('" + uv_mat_path + "', 'uvs_ordered', 'IDT_outputs', 'parametersMatrix', 'mAverageEdgeLengths', 'flipsData');";
+	std::string cmd_save_uv = "save(" + matlabStringLiteral(uv_mat_path) + ", 'uvs_ordered', 'IDT_outputs', 'parametersMatrix', 'mAverageEdgeLengths', 'flipsData');";
 	MatlabInterface::GetEngine().Eval(cmd_save_uv.c_str());
 	cout << "GIF succeed!" << endl;
 
@@ -416,7 +444,7 @@ bool GIF::loadMesh(std::string obj_path, std::string edge_lengths_mat_path)
 	}
 	else
 	{
-		std::string cmd = "load('" + edge_lengths_mat_path + "')";
+		std::string cmd = "load(" + matlabStringLiteral(edge_lengths_mat_path) + ")";
 		MatlabInterface::GetEngine().EvalToCout(cmd.c_str());
 		GMMDenseColMatrix edge_lengths(mCgalMesh.size_of_facets(), 3);
 		MatlabGMMDataExchange::GetEngineDenseMatrix("edge_lengths", edge_lengths);
@@ -1672,14 +1700,12 @@ void GIF::SetElementsForPARDISO(std::vector<Eigen::Triplet<double>>& tripletList
 	//set diagonal elements
 	for (int i = 0; i < mSizeOfMatrix; i++)
 		tripletListValues.push_back(Eigen::Triplet<double>(i, i, 0));
-	for (int i = 0; i != mNonBoundaryVerticesNearConesVerticesVec.size(); i++) {
-		int row = mNonBoundaryVerticesNearConesVerticesVec[i];
-		int row2 = row + mSizeOfSystemVar;
-		for (int j = 0; j < mNumDOF; j++) {
-			int col = j + conesConstraintsStartRow;// because we want the cols in the upper right block of the kkt matrix
-			tripletListValues.push_back(Eigen::Triplet<double>(row, col, 0));
-		}
-	}
+#ifndef BCP_PARDISO_COMPAT
+	// Panua's selected inversion needs these entries in the sparsity pattern.
+	for (int row : mNonBoundaryVerticesNearConesVerticesVec)
+		for (int j = 0; j < mNumDOF; ++j)
+			tripletListValues.emplace_back(row, j + conesConstraintsStartRow, 0.0);
+#endif
 }
 
 
@@ -1711,25 +1737,40 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 	pardiso_timer.reset();
 	pardiso_timer.start();
 	if (!res) return false;
-	GMMCompressed1RowMatrix selectiveInvSol(mKKtEigen.rows(), mKKtEigen.cols());
-	res = mPardisoSolver.selectiveInverse();
+#ifndef BCP_PARDISO_COMPAT
+	// Preserve the original selected-inversion path for Panua/legacy builds.
+	GMMCompressed1RowMatrix inverse(mKKtEigen.rows(), mKKtEigen.cols());
+	if (!mPardisoSolver.selectiveInverse() || !mPardisoSolver.getMatrixInGMMformat(inverse)) return false;
+	for (int row : mNonBoundaryVerticesNearConesVerticesVec)
+		for (int j = 0; j < mNumDOF; ++j)
+			mHarmonicBasisInAllV(row, j) = inverse(row, j + conesConstraintsStartRow);
 	pardiso_timer.stop();
-	std::cout << "Selective Inverse: " << pardiso_timer.time() << "\n";
-	if (!res) return false;
-	res = mPardisoSolver.getMatrixInGMMformat(selectiveInvSol);
-	if (!res) return false;
-	//********** Create Harmonic basis matrix for all vertices - **********
-
-	unordered_set<int>::const_iterator itr;
-	for (int i = 0; i != mNonBoundaryVerticesNearConesVerticesVec.size(); i++) {
-		int row = mNonBoundaryVerticesNearConesVerticesVec[i];
-		for (int j = 0; j < mNumDOF; j++) {
-			int col = j + conesConstraintsStartRow;
-
-			double realPart = selectiveInvSol(row, col);
-			mHarmonicBasisInAllV(row, j) = realPart;
-		}
+	std::cout << "Selected inverse: " << pardiso_timer.time() << "\n";
+#else
+	// We only need inverse columns associated with cone constraints. Solving
+	// these unit right-hand sides is equivalent to PARDISO's selected inverse,
+	// without forming a dense inverse or solving for every matrix column.
+	// Batch small groups for MKL's multi-RHS solve without allocating a dense
+	// inverse. Bound each dense buffer to ~16 MiB (or at least one column).
+	const size_t columnsInBudget = (16u * 1024u * 1024u) /
+		(std::max(size_t(mSizeOfMatrix), size_t(1)) * sizeof(double));
+	const int batchSize = std::max(1, std::min(mNumDOF, int(std::min(size_t(16), columnsInBudget))));
+	GMMDenseColMatrix rhs, solution;
+	for (int first = 0; first < mNumDOF; first += batchSize) {
+		const int count = std::min(batchSize, mNumDOF - first);
+		rhs.resize(mSizeOfMatrix, count);
+		solution.resize(mSizeOfMatrix, count);
+		std::fill(rhs.begin(), rhs.end(), 0.0);
+		for (int j = 0; j < count; ++j)
+			rhs(conesConstraintsStartRow + first + j, j) = 1.0;
+		if (!mPardisoSolver.solve(rhs, solution)) return false;
+		for (int row : mNonBoundaryVerticesNearConesVerticesVec)
+			for (int j = 0; j < count; ++j)
+				mHarmonicBasisInAllV(row, first + j) = solution(row, j);
 	}
+	pardiso_timer.stop();
+	std::cout << "Harmonic basis inverse-column solves: " << pardiso_timer.time() << "\n";
+#endif
 	for (int i = 0; i < mNumDOF; i++) {
 		int rowInKKT = i;
 		int indexOfConeInSystem = mIndexOfHEinSystem[mConesAndMetaMap[i]->halfedge()->index()];

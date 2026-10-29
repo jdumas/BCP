@@ -1,7 +1,7 @@
 #pragma once
 
-#include "CGAL\CGAL_Mesh.h"
-#include "CGAL\CGAL_Macros.h"
+#include "CGAL/CGAL_Mesh.h"
+#include "CGAL/CGAL_Macros.h"
 #include "Utils/STL_Macros.h"
 
 

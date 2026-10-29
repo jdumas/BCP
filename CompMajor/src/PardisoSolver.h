@@ -25,6 +25,9 @@ void extract_ij_from_matrix(const Eigen::SparseMatrix<double> &A,
 	std::vector<int> &JJ,
 	std::vector<double> &SS);
 
+#ifdef BCP_PARDISO_COMPAT
+#include "PardisoCompat.h"
+#else
  extern "C" {
  /* PARDISO prototype. */
  void pardisoinit (void   *, int    *,   int *, int *, double *, int *);
@@ -36,6 +39,7 @@ void extract_ij_from_matrix(const Eigen::SparseMatrix<double> &A,
  void pardiso_printstats (int *, int *, double *, int *, int *, int *,
                           double *, int *);
  }
+#endif
 
 template <typename vectorTypeI, typename vectorTypeS>
  class PardisoSolver
@@ -97,7 +101,7 @@ template <typename vectorTypeI, typename vectorTypeS>
    double   dparm[64];
    int maxfct, mnum, phase, error, msglvl, solver =0;
    /* Number of processors. */
-   int      num_procs;
+   int      num_procs = 1;
    /* Auxiliary variables. */
    char    *var;
    int i, k;

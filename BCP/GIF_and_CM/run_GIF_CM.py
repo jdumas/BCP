@@ -3,6 +3,7 @@ import time
 import igl
 import numpy as np
 import torch
+from GIF_and_CM.device import DEVICE
 
 from GIF_and_CM.consts import ROOT_PATH_CM_EXE, ROOT_DIR_CACHE_CM, ROOT_PATH_GIF_EXE, ROOT_DIR_CACHE_GIF, \
     INTERIOR_FACES_IN_GIF, BOUNDARY_SEGMENT_SIZE_IN_GIF, CURVATURE_META_VERTICES_RATE_IN_GIF, \
@@ -17,10 +18,11 @@ from run_GIF_utils import compute_UVs_from_metric_tensors_GIF
 
 
 def get_gt_mu(f, s_v, t_v, frames_faces):
-    f_s_v = torch.zeros((f.shape[0], 2, 3), dtype=torch.float64).to("cuda:0")
+    f, s_v, t_v = f.to(DEVICE), s_v.to(DEVICE), t_v.to(DEVICE)
+    f_s_v = torch.zeros((f.shape[0], 2, 3), dtype=torch.float64).to(DEVICE)
     f_s_v[:, 0, :] = s_v[f[:, 1]] - s_v[f[:, 0]]
     f_s_v[:, 1, :] = s_v[f[:, 2]] - s_v[f[:, 0]]
-    f_t_v = torch.zeros((f.shape[0], 2, 3), dtype=torch.float64).to("cuda:0")
+    f_t_v = torch.zeros((f.shape[0], 2, 3), dtype=torch.float64).to(DEVICE)
     f_t_v[:, 0, :] = t_v[f[:, 1]] - t_v[f[:, 0]]
     f_t_v[:, 1, :] = t_v[f[:, 2]] - t_v[f[:, 0]]
     local_basis = frames_faces[:, :2, :]
@@ -95,7 +97,7 @@ def low_res_to_high_res_mu_general(frames_high_res: torch.Tensor, frames_low_res
 
     faces_mu_planes_intersecting = low_res_to_high_res_mu_via_planes(frames_high_res[planes_intersecting_ind], frames_low_res, d[planes_intersecting_ind], simplified_to_original_ind[planes_intersecting_ind.cpu().numpy()])
 
-    res_rotations = torch.zeros(frames_high_res.shape[0], dtype=torch.complex128).to("cuda:0")
+    res_rotations = torch.zeros(frames_high_res.shape[0], dtype=torch.complex128).to(DEVICE)
     res_rotations[planes_parallel_ind] = faces_mu_planes_parallel
     res_rotations[planes_intersecting_ind] = faces_mu_planes_intersecting
 
@@ -118,9 +120,9 @@ def run_GIF_and_CM_with_simplification(v, f):
     faces_mu_low_res = simplified_gt_mu[:, 0] + 1j * simplified_gt_mu[:, 1]
     rotations_simplified_to_original = low_res_to_high_res_mu_general(original_mesh_frames_faces,
                                                                       simplified_mesh_frames_faces,
-                                                                      torch.from_numpy(simplified_v).to("cuda:0"),
+                                                                      torch.from_numpy(simplified_v).to(DEVICE),
                                                                       simplified_f,
-                                                                      torch.from_numpy(v).to("cuda:0"),
+                                                                      torch.from_numpy(v).to(DEVICE),
                                                                       f,
                                                                       simplified_to_original)
 
@@ -134,7 +136,7 @@ def run_GIF_and_CM_with_simplification(v, f):
     normalization_abs = 0.99 / faces_mu_abs
     above_0_99_mu_ind = faces_mu_abs > 0.99
     faces_mu[above_0_99_mu_ind] = faces_mu[above_0_99_mu_ind] * normalization_abs[above_0_99_mu_ind]
-    pred_M = torch.zeros((faces_mu.shape[0], 2, 2)).to("cuda:0")
+    pred_M = torch.zeros((faces_mu.shape[0], 2, 2)).to(DEVICE)
     sq_abs_plus1_1 = 1 + faces_mu.abs() ** 2
     pred_M[:, 0, 0] = sq_abs_plus1_1 + 2 * faces_mu.real
     pred_M[:, 0, 1] = 2 * faces_mu.imag
@@ -182,9 +184,9 @@ def run_GIF_and_CM_with_simplification_with_IDT(v, f):
     faces_mu_low_res = simplified_gt_mu[:, 0] + 1j * simplified_gt_mu[:, 1]
     rotations_simplified_to_original = low_res_to_high_res_mu_general(original_mesh_frames_faces,
                                                                       simplified_mesh_frames_faces,
-                                                                      torch.from_numpy(simplified_v).to("cuda:0"),
+                                                                      torch.from_numpy(simplified_v).to(DEVICE),
                                                                       simplified_f,
-                                                                      torch.from_numpy(v).to("cuda:0"),
+                                                                      torch.from_numpy(v).to(DEVICE),
                                                                       f,
                                                                       simplified_to_original)
     end_time1 = time.time()
@@ -196,7 +198,7 @@ def run_GIF_and_CM_with_simplification_with_IDT(v, f):
     normalization_abs = 0.99 / faces_mu_abs
     above_0_99_mu_ind = faces_mu_abs > 0.99
     faces_mu[above_0_99_mu_ind] = faces_mu[above_0_99_mu_ind] * normalization_abs[above_0_99_mu_ind]
-    pred_M = torch.zeros((faces_mu.shape[0], 2, 2)).to("cuda:0")
+    pred_M = torch.zeros((faces_mu.shape[0], 2, 2)).to(DEVICE)
     sq_abs_plus1_1 = 1 + faces_mu.abs() ** 2
     pred_M[:, 0, 0] = sq_abs_plus1_1 + 2 * faces_mu.real
     pred_M[:, 0, 1] = 2 * faces_mu.imag
@@ -227,14 +229,14 @@ def run_GIF_and_CM_with_simplification_with_IDT(v, f):
 def smooth_mu(simplified_v, simplified_f, faces_mu_low_res, simplified_mesh_frames_faces, barycentric_coordinates, simplified_to_original):
     s_verts_to_faces_transport, t1 = compute_parallel_transport_intrinsic_vertex_to_face(simplified_v, simplified_f, simplified_mesh_frames_faces.cpu().numpy())
     start_time = time.time()
-    s_faces_torch = torch.from_numpy(simplified_f).to("cuda:0")
-    barycentric_coordinates_torch = torch.from_numpy(barycentric_coordinates).to("cuda:0")
-    s_verts_to_faces_transport_torch = torch.from_numpy(s_verts_to_faces_transport).to("cuda:0")
+    s_faces_torch = torch.from_numpy(simplified_f).to(DEVICE)
+    barycentric_coordinates_torch = torch.from_numpy(barycentric_coordinates).to(DEVICE)
+    s_verts_to_faces_transport_torch = torch.from_numpy(s_verts_to_faces_transport).to(DEVICE)
     vertices_mu = interpolate_faces_dimensional_data_to_vertices_torch(
         s_faces_torch,
         faces_mu_low_res.reshape(-1, 1),
         1 / s_verts_to_faces_transport_torch ** 2,
-        torch.from_numpy(igl.doublearea(simplified_v, simplified_f)).to("cuda:0")
+        torch.from_numpy(igl.doublearea(simplified_v, simplified_f)).to(DEVICE)
     )
     faces_mu = barycentric_coordinates_torch[:, 0] * vertices_mu[simplified_f[simplified_to_original, 0]].reshape(-1) * s_verts_to_faces_transport_torch[simplified_to_original, 0] ** 2 +\
                barycentric_coordinates_torch[:, 1] * vertices_mu[simplified_f[simplified_to_original, 1]].reshape(-1) * s_verts_to_faces_transport_torch[simplified_to_original, 1] ** 2 +\

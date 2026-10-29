@@ -24,3 +24,16 @@ GIF/GIF/GIF/x64
 CompMajor/.vs
 PT/.vs
 ./idea
+
+# Project-local environments, dependency caches and generated output
+/build*/
+/.pixi/
+/pixi.lock
+/.venv/
+/.cache/
+/.uv-cache/
+/outputs/
+__pycache__/
+# Keep build recipes trackable despite the upstream *.txt rule.
+!CMakeLists.txt
+!**/CMakeLists.txt

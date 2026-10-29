@@ -1,0 +1,92 @@
+[project]
+name = "bcp-research"
+version = "0.1.0"
+description = "Fast Injective Mesh Parameterization via Beltrami Coefficient Prolongation"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "numpy>=1.26,<2",
+    "scipy>=1.11,<1.16",
+    "libigl>=2.5,<3",
+]
+
+# Pixi interprets this extra as the 'pipeline' feature.
+[project.optional-dependencies]
+pipeline = [
+    "meshlib",
+    "open3d>=0.18,<0.20",
+    "openmesh==1.2.1",
+    "torch>=2.5,<3",
+    "pandas>=2,<3",
+    "pydantic>=2,<3",
+]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64", "osx-64"]
+
+[tool.pixi.dependencies]
+python = "3.11.*"
+cmake = ">=3.24,<4"
+ninja = "*"
+cxx-compiler = "*"
+
+# Accelerate is supplied by macOS, not Conda. Keep Intel-only packages off Macs.
+[tool.pixi.target.linux-64.dependencies]
+mkl-devel = ">=2024,<2027"
+tbb-devel = "*"
+# CGAL 5.6's legacy iterator templates are rejected by GCC 15.
+gcc_linux-64 = "13.*"
+gxx_linux-64 = "13.*"
+
+[tool.pixi.target.win-64.dependencies]
+mkl-devel = ">=2024,<2027"
+tbb-devel = "*"
+
+[tool.pixi.tasks]
+configure = "python scripts/pixi_tasks.py configure"
+build = "python scripts/pixi_tasks.py build"
+test = "python scripts/pixi_tasks.py test"
+test-gpu = "python scripts/pixi_tasks.py test --gpu"
+parameterize = "python scripts/pixi_tasks.py parameterize"
+
+# Preserve the original direct, in-memory MATLAB engine for the full-performance
+# path. MATLAB itself is a separately licensed installation, not a Conda package.
+[tool.pixi.feature.gif.dependencies]
+gmp = "*"
+mpfr = "*"
+
+# Current PyTorch >=2.5 wheels do not support Intel Macs. Native CM/PT still do.
+[tool.pixi.feature.pipeline]
+platforms = ["linux-64", "win-64", "osx-arm64"]
+
+# conda-forge's Octave recipe does not build for Windows.
+[tool.pixi.feature.octave]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+
+[tool.pixi.feature.octave.dependencies]
+octave = ">=8,<11"
+
+# Explicit opt-in only: build a private, patched headless Octave on macOS.
+# The prebuilt octave package supplies native dependencies; it is not modified.
+[tool.pixi.feature.octave-source]
+platforms = ["osx-arm64"]
+
+[tool.pixi.feature.octave-source.dependencies]
+fortran-compiler = "*"
+make = "*"
+pkg-config = "*"
+patch = "*"
+bison = "*"
+gperf = "*"
+rapidjson = ">=1.1,<2"
+sed = "*"
+perl = "*"
+
+[tool.pixi.feature.octave-source.tasks]
+build-octave = "python scripts/build_octave.py"
+
+[tool.pixi.environments]
+default = { features = [], solve-group = "native" }
+matlab = { features = ["pipeline", "gif"], solve-group = "matlab" }
+octave = { features = ["pipeline", "gif", "octave"], solve-group = "octave" }
+octave-source = { features = ["pipeline", "gif", "octave", "octave-source"], solve-group = "octave-source" }
