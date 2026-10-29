@@ -77,9 +77,6 @@ def main():
                 evaluator = None
                 evaluator = TorchEnergy(device=request["device"])
                 stats["device"] = str(evaluator.device)
-            elif operation == "close":
-                write_response(sink, {}, stats)
-                return
             elif evaluator is None:
                 raise RuntimeError("Tensor worker has not been started")
             elif operation == "prepare":

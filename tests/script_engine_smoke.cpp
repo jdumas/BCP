@@ -1,9 +1,13 @@
 #include "Utils/MatlabInterface.h"
 #include "MatFile.h"
+#include <algorithm>
+#include <vector>
 #include <complex>
 #include <filesystem>
 #include <iostream>
 #ifdef BCP_OCTAVE_ENGINE
+#include <chrono>
+#include <thread>
 #include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -12,7 +16,14 @@
 static void check(bool result, const char* message) {
     if (!result) throw std::runtime_error(message);
 }
-int main() try {
+int main(int argc, char** argv) try {
+#ifdef BCP_OCTAVE_ENGINE
+    // popen2 passes the worker script as argv[1]; simulate a worker that hangs.
+    if (argc == 2) {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        return 1;
+    }
+#endif
 #ifdef BCP_SKIP_SCRIPT_TEST
     std::cout << "Numerical script runtime unavailable; test not run\\n";
     return 77;
@@ -36,16 +47,37 @@ int main() try {
     engine.Eval("s=full(s);");
     check(!engine.GetEngineComplexMatrix("s",2,2,dense),"Complex get failed");
     check(dense[1]==values[0] && dense[2]==values[1],"Sparse complex mismatch");
+    std::vector<std::complex<double>> large(8193*2), roundtrip(large.size());
+    for (size_t i=0;i<large.size();++i) large[i]={double(i)/7.0,-double(i)/11.0};
+    check(!engine.SetEngineComplexMatrix("large",8193,2,large.data()),"Large complex set failed");
+    check(!engine.GetEngineComplexMatrix("large",8193,2,roundtrip.data()) && large==roundtrip,
+          "Large MAT transfer changed values");
     engine.Eval("clear;");
     check(!engine.SetEngineRealMatrix("a",2,3,input),"Transfer after clear failed");
     engine.Eval("clearvars -except a; a = a + 1;");
     check(!engine.GetEngineRealMatrix("a",2,3,output),"Transfer after clearvars failed");
     check(output[0]==2 && output[5]==7,"Workspace persistence failed");
     bool caught=false;
-    try { engine.Eval("error('intentional smoke error');"); }
+    try { engine.Eval("fprintf(1, '%s', repmat('x',1,4097)); error('intentional smoke error');"); }
     catch(const std::exception&) { caught=true; }
     check(caught,"Script errors were silently ignored");
 #ifdef BCP_OCTAVE_ENGINE
+    for (int count : {4064,4080,4095,4096,4097,MAX_OUTPUT_BUFFER_SIZE+4096}) {
+        const auto code="fprintf(1, '%s', repmat('x',1,"+std::to_string(count)+"));";
+        const auto text=engine.EvalToString(code.c_str(),false);
+        check(text==std::string(std::min(count,MAX_OUTPUT_BUFFER_SIZE-1),'x'),
+              "Chunked output or sentinel framing changed");
+    }
+    const auto executable=std::filesystem::canonical(argv[0]).string();
+    const char* worker=executable.c_str();
+    check(!engine.SetEngineStringArray("worker_stub",1,&worker),"Cannot set worker stub");
+    engine.Eval(
+        "saved_python = getenv('BCP_PYTHON_EXECUTABLE'); saved_timeout = getenv('BCP_TORCH_TIMEOUT_SECONDS');"
+        "setenv('BCP_PYTHON_EXECUTABLE',worker_stub); setenv('BCP_TORCH_TIMEOUT_SECONDS','1');"
+        "timeout_seen = false; try; bcp_torch_energy('start','cpu'); catch failure;"
+        "assert(strcmp(failure.identifier,'BCP:TorchTimeout'),failure.message); timeout_seen = true; end;"
+        "assert(timeout_seen); setenv('BCP_PYTHON_EXECUTABLE',saved_python);"
+        "setenv('BCP_TORCH_TIMEOUT_SECONDS',saved_timeout);");
     caught=false;
     try { engine.Eval("bcp_gpu_enabled('gpu');"); }
     catch(const std::exception&) { caught=true; }

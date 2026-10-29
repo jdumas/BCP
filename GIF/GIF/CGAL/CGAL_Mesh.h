@@ -56,7 +56,7 @@ public:
 	int countVertexStates(int& numFreeVertices, int& numFixedVertices) const;
 	int fixBorderVertices(); //set all border vertices to be fixed and all the rest to be free. return the number of border vertices
 	int fixBorderFaces(); //set all border faces to be fixed and all the rest to be free. return the number of border faces
-	bool getBorderVerticesCCW(std::vector<Vertex_handle>& borderVertices, const Vertex_const_handle* firstVertex);
+	bool getBorderVerticesCCW(std::vector<Vertex_handle>& borderVertices, const Vertex_const_handle* firstVertex = NULL);
 	bool getBorderHalfEdges(std::vector<Halfedge_handle>& borderHalfedges);
 	void getFixedVertexIndexMap(std::vector<Vertex_handle>& map);
 	void getFixedVertexIndexMap(std::vector<Vertex_const_handle>& map) const;
@@ -834,7 +834,7 @@ class MeshBuilder : public CGAL::Modifier_base<H>
 
 public:
 
-	MeshBuilder(const std::vector<Point_3>* vertices, const std::vector<int>* faceIndices, const std::vector<int>* vertexCount); //set vertexCount to NULL for triangle meshes
+	MeshBuilder(const std::vector<Point_3>* vertices, const std::vector<int>* faceIndices, const std::vector<int>* vertexCount = NULL); //set vertexCount to NULL for triangle meshes
 	void operator()(H& hds);
 
 protected:

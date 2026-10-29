@@ -163,8 +163,12 @@ MatlabInterface::MatlabInterface() : m_ep(NULL), mOutputStringBuffer(NULL)
 
 MatlabInterface::~MatlabInterface()
 {
-	// EngineClose() detaches the output buffer before the buffer is deallocated.
-	EngineClose();
+#ifdef _WIN32
+	// engOpen can attach to a shared COM session; do not quit it on client exit.
+	if (m_ep != NULL) engOutputBuffer(m_ep, NULL, 0);
+#else
+	EngineClose(); // POSIX engOpen starts a private process.
+#endif
 	delete[] mOutputStringBuffer;
 	mOutputStringBuffer = NULL;
 }

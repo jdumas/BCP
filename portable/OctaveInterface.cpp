@@ -100,8 +100,7 @@ bool isSimpleIdentifier(const std::string& s) {
 }
 
 // Validates variable names or struct.field expressions (possibly nested, e.g. GIF.F1).
-bool isValidTargetExpression(const std::string& expr, bool& isStructField) {
-    isStructField = false;
+bool isValidTargetExpression(const std::string& expr) {
     if (expr.empty()) return false;
     size_t start = 0;
     while (start < expr.size()) {
@@ -115,7 +114,6 @@ bool isValidTargetExpression(const std::string& expr, bool& isStructField) {
         if (dot == std::string::npos) {
             break;
         }
-        isStructField = true;
         start = dot + 1;
         if (start >= expr.size()) {
             return false;
@@ -406,11 +404,12 @@ int runOctaveCommand(Engine* ep, const std::string& code, std::string& capturedO
     }
 
     std::string accum;
+    size_t searchFrom = 0;
     char buf[4096];
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
     while (true) {
-        size_t okPos = accum.find(okToken);
+        size_t okPos = accum.find(okToken, searchFrom);
         if (okPos != std::string::npos) {
             if (okPos > 0 && accum[okPos - 1] == '\n') {
                 --okPos;
@@ -418,7 +417,7 @@ int runOctaveCommand(Engine* ep, const std::string& code, std::string& capturedO
             capturedOutput = accum.substr(0, okPos);
             return 0;
         }
-        size_t errPos = accum.find(errToken);
+        size_t errPos = accum.find(errToken, searchFrom);
         if (errPos != std::string::npos) {
             if (errPos > 0 && accum[errPos - 1] == '\n') {
                 --errPos;
@@ -466,6 +465,9 @@ int runOctaveCommand(Engine* ep, const std::string& code, std::string& capturedO
             capturedOutput = accum;
             return 1;
         }
+        // Retain the overlap for a sentinel split across reads, without
+        // rescanning all previous output on every chunk.
+        searchFrom = accum.size() > errToken.size() ? accum.size() - errToken.size() : 0;
         accum.append(buf, static_cast<size_t>(n));
     }
 }
@@ -489,8 +491,7 @@ int transferMatFileToOctave(Engine* ep,
         throw std::runtime_error("OctaveInterface: null target variable name in transferMatFileToOctave");
     }
     std::string target = trimWhitespace(targetName);
-    bool isStructField = false;
-    if (!isValidTargetExpression(target, isStructField)) {
+    if (!isValidTargetExpression(target)) {
         std::string msg = std::string("Invalid Octave variable target expression: '") + targetName + "'";
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -522,8 +523,7 @@ int saveOctaveVarToMatFile(Engine* ep,
         throw std::runtime_error("OctaveInterface: null source variable name in saveOctaveVarToMatFile");
     }
     std::string source = trimWhitespace(sourceName);
-    bool isStructField = false;
-    if (!isValidTargetExpression(source, isStructField)) {
+    if (!isValidTargetExpression(source)) {
         std::string msg = std::string("Invalid Octave variable source expression: '") + sourceName + "'";
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -532,7 +532,7 @@ int saveOctaveVarToMatFile(Engine* ep,
     std::string escapedPath = escapeOctaveSingleQuoted(matPath);
     std::ostringstream cmd;
     cmd << kTempTransferVar << " = " << source << ";\n"
-        << "save('-mat7-binary', '" << escapedPath << "', '" << kTempTransferVar << "');\n"
+        << "save('-v6', '" << escapedPath << "', '" << kTempTransferVar << "');\n"
         << "clear " << kTempTransferVar << ";";
 
     std::string out;
@@ -970,8 +970,7 @@ int MatlabInterface::SetEngineSparseRealMatrix(const char* name,
         throw std::runtime_error("Null variable name in SetEngineSparseRealMatrix");
     }
     std::string target = trimWhitespace(name);
-    bool isStructField = false;
-    if (!isValidTargetExpression(target, isStructField)) {
+    if (!isValidTargetExpression(target)) {
         std::string msg = std::string("Invalid sparse matrix target name: ") + name;
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -1032,8 +1031,7 @@ int MatlabInterface::SetEngineSparseComplexMatrix(const char* name,
         throw std::runtime_error("Null variable name in SetEngineSparseComplexMatrix");
     }
     std::string target = trimWhitespace(name);
-    bool isStructField = false;
-    if (!isValidTargetExpression(target, isStructField)) {
+    if (!isValidTargetExpression(target)) {
         std::string msg = std::string("Invalid sparse complex matrix target name: ") + name;
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -1062,8 +1060,7 @@ int MatlabInterface::CreateAllZerosSparseMatrix(const char* name, int nRows, int
         throw std::runtime_error("Null variable name in CreateAllZerosSparseMatrix");
     }
     std::string target = trimWhitespace(name);
-    bool isStructField = false;
-    if (!isValidTargetExpression(target, isStructField)) {
+    if (!isValidTargetExpression(target)) {
         std::string msg = std::string("Invalid sparse matrix target name: ") + name;
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -1078,8 +1075,7 @@ int MatlabInterface::SetEngineStringArray(const char* name, unsigned int n, cons
         throw std::runtime_error("Octave engine is not open or null argument in SetEngineStringArray");
     }
     std::string target = trimWhitespace(name);
-    bool isStructField = false;
-    if (!isValidTargetExpression(target, isStructField)) {
+    if (!isValidTargetExpression(target)) {
         std::string msg = std::string("Invalid string array target name: ") + name;
         ERROR_LOG(msg);
         throw std::runtime_error(msg);
@@ -1368,8 +1364,7 @@ bool MatlabInterface::GetMatrixDimensions(const char* variableName,
     }
 
     std::string expr = trimWhitespace(variableName);
-    bool isStructField = false;
-    if (!isValidTargetExpression(expr, isStructField)) {
+    if (!isValidTargetExpression(expr)) {
         throw std::runtime_error(std::string("Invalid variable expression in GetMatrixDimensions: ") + variableName);
     }
 

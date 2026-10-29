@@ -1,4 +1,3 @@
-import os
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -111,11 +110,10 @@ def compute_parallel_transport_intrinsic_vertex_to_face(
 
     """
     start_time = time.time()
-    boundary_loop = igl.boundary_loop(f)
     transition_angles = np.zeros_like(f).astype(np.float64)  # ordering: [[i->j, j->k, k->i], ...]
 
     boundary_verts = []
-    boundary_loops = igl.all_boundary_loop(f) if hasattr(igl, "all_boundary_loop") else [boundary_loop]
+    boundary_loops = igl.all_boundary_loop(f) if hasattr(igl, "all_boundary_loop") else igl.boundary_loop_all(f)
     for loop in boundary_loops:
         for i in range(len(loop)):
             boundary_verts.append((loop[i]))

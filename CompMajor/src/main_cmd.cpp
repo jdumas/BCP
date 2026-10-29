@@ -1,7 +1,7 @@
 #include "Newton.h"
 #include <igl/read_triangle_mesh.h>
 #include <igl/writeOBJ.h>
-#include "Clock.h"
+#include "../../portable/Clock.h"
 #include <cstdlib>
 #include <fstream>
 #include <stdexcept>

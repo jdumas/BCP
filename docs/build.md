@@ -248,7 +248,7 @@ ctest --test-dir build/eigen --output-on-failure
   numerical tests and core Python tests. The optional Torch math tests skip in
   this lightweight environment because Torch is not installed there.
 - `pixi run -e octave test`: **11/11 CTest checks pass, no skips**. The full
-  environment runs 39 Python unit tests, including finite-difference gradient
+  environment runs 41 Python unit tests, including finite-difference gradient
   and unprojected-Hessian checks for the analytic Torch implementation.
 - `pixi run -e octave test-gpu`: **11/11 CTest checks pass, no skips**, with
   `cuda:0` confirmed for both Python tensor processing and the GIF Torch energy
@@ -266,7 +266,10 @@ ctest --test-dir build/eigen --output-on-failure
   NumPy 1.26.4 and libigl 2.6.3. Runtime linkage was checked: MKL LP64/core/GNU
   threading and a single libgomp come from the project-local Pixi environment.
 - The separate stub-MKL contract test checks API/control translation; it is not
-  being substituted for the real MKL numerical tests above.
+  being substituted for the real MKL numerical tests above. Native tests also
+  reuse indefinite factors for full 16-RHS and partial 3-RHS batches.
+- Script-engine regressions cover chunked/split-sentinel output, large complex
+  MAT roundtrips and a hung worker reaching the configured read timeout.
 - Manual compile-only Octave builds without an interpreter still report the
   live numerical test as **Skipped**. Full Pixi test environments require a real
   runtime and cannot silently skip their integration gate.
@@ -287,19 +290,23 @@ a single-thread default. Correctness tests cap OpenMP/MKL threads explicitly.
 On Linux/POSIX, each native invocation has its own process group; timeout or
 interruption terminates that group, including the Octave/Torch descendants.
 Windows retains direct-child termination; its process-tree behavior is not
-validated by the Linux tests.
+validated by the Linux tests. MATLAB teardown on Windows detaches the output
+buffer without quitting a potentially shared COM session; POSIX closes its
+private engine process.
 
 Failures abort with diagnostics rather than restarting an empty Octave workspace.
 An explicit engine restart is supported, but callers must rebuild all algorithm
 state. The Octave adapter implements the dense/complex and sparse-write subset
 needed by GIF; unused sparse reads fail explicitly instead of carrying a second
-untested sparse-conversion implementation.
+untested sparse-conversion implementation. Its private numeric transfers use
+uncompressed MAT v5 files, and output framing scans only newly received data
+plus the possible split-sentinel overlap. Public result formats are unchanged.
 
 Timeout controls cover different scopes:
 
 - `BCP_NATIVE_TIMEOUT_SECONDS`: optional finite, positive override for the whole
-  native subprocess. Without it, existing defaults remain CM 3600 s and GIF/PT
-  300 s. This includes startup and every solver iteration.
+  native subprocess. Defaults are CM 3600 s and GIF/PT 300 s; PT is newly bounded.
+  This includes startup and every solver iteration.
 - `BCP_OCTAVE_TIMEOUT_MS`: per-engine-evaluation deadline, default 600000 ms
   (10 min), maximum 86400000 ms.
 - `BCP_TORCH_TIMEOUT_SECONDS`: per-worker request/read deadline, default 600 s.

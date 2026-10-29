@@ -1,5 +1,7 @@
 #include "MatFile.h"
 #include <Eigen/LU>
+#include <algorithm>
+#include <vector>
 #include <igl/read_triangle_mesh.h>
 #include <cmath>
 #include <cstdlib>
@@ -47,6 +49,19 @@ void test_solver() {
     phase=33;
     pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,b,x,&error,dp);
     require(!error && (Eigen::Map<Eigen::Matrix2d>(x)-m.inverse()).norm()<1e-10,"Bad inverse-column solves");
+    // Reuse the same factors with full and partial production-sized RHS batches.
+    for (int first=0; first<19; first+=16) {
+        rhs=std::min(16,19-first);
+        std::vector<double> units(n*rhs,0.0), columns(n*rhs);
+        for (int j=0;j<rhs;++j) units[n*j+(first+j)%n]=1.0;
+        pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,
+                units.data(),columns.data(),&error,dp);
+        require(!error,"Batched inverse-column solve failed");
+        using Matrix=Eigen::Matrix<double,Eigen::Dynamic,Eigen::Dynamic>;
+        require((m*Eigen::Map<Matrix>(columns.data(),n,rhs)-
+                 Eigen::Map<Matrix>(units.data(),n,rhs)).norm()<1e-10,
+                "Bad full/partial batch residual");
+    }
     phase=-1;
     pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,b,x,&error,dp);
 }
