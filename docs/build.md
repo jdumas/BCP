@@ -5,15 +5,17 @@
 All dependency/environment configuration is in **`pyproject.toml`**, managed by
 Pixi. There is no separate `pixi.toml`, uv-managed environment, or uv task.
 Pixi reads the standard Python dependencies and `pipeline` extra as PyPI
-requirements, and installs the compiler, CMake, Ninja, MKL and native runtimes
-from conda-forge. CPM still fetches pinned C++ source dependencies into the build
+requirements, and installs the compiler, CMake, Ninja and native runtimes
+from conda-forge. Linux/Windows also install MKL; macOS uses the system
+Accelerate framework, with no MKL dependency. CPM still fetches pinned C++ source dependencies into the build
 tree.
 
 | Pixi environment | Platforms declared | Contents / runtime |
 | --- | --- | --- |
-| default | Linux x86-64, Windows x86-64 | CM/PT, MKL, core Python front-end |
-| matlab | Linux x86-64, Windows x86-64 | Full pipeline with direct MATLAB C engine |
-| octave | Linux x86-64 only | Full pipeline with optional Octave compatibility bridge |
+| default | Linux x86-64, Windows x86-64, macOS arm64/x86-64 | CM/PT, platform sparse solver, core Python front-end |
+| matlab | Linux x86-64, Windows x86-64, macOS arm64 | Full pipeline with direct MATLAB C engine |
+| octave | Linux x86-64, macOS arm64 | Full pipeline with prebuilt Octave compatibility bridge |
+| octave-source | macOS arm64 only, explicit opt-in | Full pipeline with private source-built, patched headless Octave |
 
 The Linux native and complete MKL/Octave pipelines have been installed, built
 and run successfully. Windows is a declared target, **not a claim of Windows
@@ -29,7 +31,7 @@ pixi run test
 pixi run parameterize path/to/disk.obj outputs/disk_cm.obj
 ```
 
-This configures a Release/MKL build, runs the native and dependency-free Python
+This configures a Release build (Accelerate on macOS, MKL elsewhere), runs the native and dependency-free Python
 tests, and optionally writes an OBJ retaining the 3D geometry with `vt` texture
 coordinates. Use your own input triangle disk; no sample data is required.
 
@@ -41,6 +43,109 @@ not install the licensed MSVC compiler itself.
 
 Build products are separated by solver/runtime, for example
 `build/pixi-mkl-native/bin/`.
+
+## macOS (Apple Silicon and Intel)
+
+Install Xcode Command Line Tools (`xcode-select --install`) and Pixi, then use
+the same commands above. Both CMake and the Pixi task driver default to
+`ACCELERATE` on macOS, with separate outputs under
+`build/pixi-accelerate-native/bin/` or `build/pixi-accelerate-octave/bin/`.
+No MKL installation, license, or Homebrew BLAS replacement is needed.
+
+For the MATLAB-free full CPU pipeline on Apple Silicon:
+
+```sh
+pixi run -e octave test
+pixi run -e octave parameterize path/to/disk.obj outputs/disk_bcp.obj --device cpu --gif-device cpu
+# Optional Torch-on-CPU energy evaluator:
+pixi run -e octave test --gif-backend torch
+```
+
+The full environment installs Octave from conda-forge and Python packages
+(including a source build of OpenMesh) through Pixi. It is not declared for
+Intel Macs because current PyTorch >=2.5 wheels are Apple-Silicon-only; the
+native CM/PT environment supports both architectures. CPU execution is the
+macOS path: neither CUDA nor Metal/MPS is implemented by this pipeline.
+`test-gpu` requires CUDA and is not a macOS validation command.
+
+The GIF build uses CGAL 5.6.3, which fixes iterator code rejected by modern
+Clang. A GIF-only `-Wno-register` permits GMM 4.2's legacy storage-class syntax
+under Clang/C++17; it does not change the numerical algorithm.
+
+**Validation on Apple Silicon:** `pixi run test` passes all 6 CTest checks,
+including real Accelerate solves and the native CM/PT smoke test. The prebuilt
+Octave environment installs and the full GIF executable compiles. However,
+its live Octave numerical and full-pipeline tests fail at interpreter startup
+in the current nono sandbox:
+`fatal: unable to find current directory`. The Conda Octave 10.3 build uses
+gnulib's replacement `getcwd()`, which opens/enumerates parent directories;
+`nono why --self` confirms ancestors outside the workspace grant are denied.
+The system `getcwd()` succeeds, but Octave's wrapper fails with `EPERM`.
+No sandbox bypass or broad filesystem grant has been applied. The optional
+source-build path below addresses this without changing permissions. Intel
+Mac execution and MATLAB on macOS remain unverified.
+
+### Opt-in patched Octave source build (macOS arm64)
+
+The default `octave` environment **continues to use the prebuilt Conda package**.
+No configure/build/test task in that environment triggers an Octave rebuild.
+To explicitly select the source-built alternative:
+
+```sh
+# First run downloads, builds, installs privately, and checks the interpreter.
+pixi run -e octave-source build-octave
+# These also build it on first use, then reuse the validated installation:
+pixi run -e octave-source test
+pixi run -e octave-source parameterize path/to/disk.obj outputs/disk_bcp.obj --device cpu --gif-device cpu
+# Optional Torch-on-CPU evaluator:
+pixi run -e octave-source test --gif-backend torch
+```
+
+This builds the official Octave **10.3.0** release, checked against a pinned
+SHA-256, with `scripts/patches/octave-10.3.0-macos-getcwd.patch`. The Apple-only
+patch makes gnulib try native `getcwd()` even if configure classified it as
+unusable. A native permission error is returned, not retried by traversing
+ancestors. Other platforms' code is unchanged; this is not a loader shim,
+modified `$PWD`, root-working-directory trick, or filesystem permission grant.
+
+Pixi supplies the C/C++/Fortran compilers, make, patch, pkg-config, generation
+tools and native library dependencies. The prebuilt Octave package remains
+installed as a dependency provider; **none of its files are patched or
+replaced**. The private interpreter is headless (no GUI, Java, audio or docs),
+uses Conda BLAS/LAPACK and retains the sparse/complex numerical functionality
+needed by GIF. BCP's native sparse solves still use Accelerate.
+
+Builds and logs live under `build/octave-source/<fingerprint>/`. A build is
+reused only after installation and real `pwd()`, sparse-solve and JSON
+round-trip smoke tests in the original workspace pass. The fingerprint includes
+the archive, patch, builder, configuration, compiler flags and Conda package set. Source download
+and archive extraction are checked; a failed build never falls back to the
+prebuilt interpreter. Interrupted builds can resume with the same inputs.
+
+Compilation can take substantial time and disk space. The default is four
+parallel jobs; use `pixi run -e octave-source build-octave --jobs 8` or set
+`BCP_OCTAVE_BUILD_JOBS=8` to change it. Run only one source build at a time.
+The private installation depends on its Pixi environment; do not move it or
+remove that environment while using it. Remove `build/octave-source/` to
+explicitly discard all source build artifacts.
+
+The source environment passes its exact interpreter path to both CMake and
+the GIF runtime, including numerical/reference tests, and uses a separate
+BCP build directory: `build/pixi-accelerate-octave-source/`. Merely having a
+source build on disk never changes the ordinary `octave` environment.
+
+**Validated on Apple Silicon inside the unchanged nono sandbox:**
+`pixi run -e octave-source test` passes **12/12 CTest checks**. This includes
+live engine/error/timeout tests, both complete BCP variants (IDT disabled and
+enabled) with the native Octave and Torch-on-CPU evaluators, Torch reference
+comparisons, and the Accelerate CM/PT numerical tests. All **62 Python unit
+tests pass with no skips**. The private interpreter's `pwd()`, JSON and sparse
+solve smoke checks pass in the original workspace. Library linkage was checked
+to use the private source-built Octave libraries, not the prebuilt ones.
+A subsequent test invocation reused the validated interpreter without compiling
+it again. No additional filesystem grants, cwd relocation or loader injection
+were used. These are CPU correctness results, not a macOS performance-parity
+or GPU-support claim.
 
 ## Full pipeline: preserve the original fast MATLAB path
 
@@ -202,7 +307,8 @@ CMake selects one explicit backend:
 
 | `BCP_LINEAR_SOLVER` | Behavior |
 | --- | --- |
-| `MKL` (default) | Separate Intel oneMKL PARDISO implementation, LP64 |
+| `ACCELERATE` (macOS default) | Apple sparse Cholesky / pivoted LDLT; QR for general matrices |
+| `MKL` (Linux/Windows default) | Separate Intel oneMKL PARDISO implementation, LP64 |
 | `PANUA` | Original PARDISO library and selected-inversion path |
 | `EIGEN` | Explicit portability/testing fallback, not a performance substitute |
 
@@ -214,8 +320,18 @@ refactorizations. GNU builds use MKL's GNU OpenMP layer; other non-Intel
 compilers use parallel TBB to avoid loading a second OpenMP runtime alongside
 MSVC/Clang's runtime. MKL threading remains configurable with `MKL_THREADING`.
 
+Accelerate implements the same private compatibility ABI, not a PARDISO
+library masquerading under Intel/Panua symbols. It translates one-based CSR
+indices to the framework's zero-based CSC representation. Symmetric upper CSR
+is lower CSC without copying/reordering numeric values; general matrices use
+a cached CSR-to-CSC permutation. Symbolic analysis is reused for numerical
+refactorization, with Cholesky for SPD systems and pivoted LDLT for indefinite
+KKT systems. General real matrix types use sparse QR, which works on macOS
+versions before the sparse LU API introduced in 15.5. Panua-specific controls
+are not passed to Accelerate, and failed refactorizations invalidate old factors.
+
 The Panua backend retains its selected-inverse algorithm and sparsity pattern.
-MKL/Eigen instead reuse the KKT factors and solve bounded batches of the needed
+Accelerate/MKL/Eigen instead reuse the KKT factors and solve bounded batches of the needed
 cone columns; the batch size is capped by a per-buffer memory budget.
 Mathematical equivalence does not establish performance parity: realistic mesh
 benchmarks against the original backend are still required. Thread counts are
@@ -224,6 +340,9 @@ not forcibly reduced to one in production; tests explicitly constrain OpenMP to 
 Manual CMake configurations (normally Pixi tasks supply the environment):
 
 ```sh
+# macOS (also selected by default there):
+cmake -S . -B build/accelerate -G Ninja -DBCP_LINEAR_SOLVER=ACCELERATE
+# Linux/Windows:
 cmake -S . -B build/mkl -G Ninja -DBCP_LINEAR_SOLVER=MKL
 cmake -S . -B build/matlab -G Ninja -DBCP_BUILD_GIF=ON -DBCP_SCRIPT_ENGINE=MATLAB -DBCP_LINEAR_SOLVER=MKL
 cmake -S . -B build/octave -G Ninja -DBCP_BUILD_GIF=ON -DBCP_SCRIPT_ENGINE=OCTAVE -DBCP_LINEAR_SOLVER=MKL
@@ -244,7 +363,11 @@ ctest --test-dir build/eigen --output-on-failure
 
 ## Validation status and limits
 
-- `pixi run test`: **5/5 CTest checks pass**, including real MKL-backed CM/PT
+macOS results and its current sandbox/runtime limitation are listed above.
+The Linux results below were recorded before this macOS port; they have not
+been rerun on Linux in the macOS session.
+
+- `pixi run test` (Linux): **5/5 CTest checks pass**, including real MKL-backed CM/PT
   numerical tests and core Python tests. The optional Torch math tests skip in
   this lightweight environment because Torch is not installed there.
 - `pixi run -e octave test`: **11/11 CTest checks pass, no skips**. The full
@@ -285,8 +408,9 @@ ctest --test-dir build/eigen --output-on-failure
 
 ## Failure handling and timeouts
 
-Native calls inherit the caller's OpenMP/MKL thread environment without injecting
-a single-thread default. Correctness tests cap OpenMP/MKL threads explicitly.
+Native calls inherit the caller's OpenMP/MKL/Accelerate thread environment
+without injecting a single-thread default. Correctness tests cap
+`OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` explicitly.
 On Linux/POSIX, each native invocation has its own process group; timeout or
 interruption terminates that group, including the Octave/Torch descendants.
 Windows retains direct-child termination; its process-tree behavior is not

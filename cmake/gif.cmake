@@ -13,9 +13,10 @@ set(Boost_NO_SYSTEM_PATHS ON)
 set(BOOST_ROOT "${boost_SOURCE_DIR}")
 set(Boost_INCLUDE_DIR "${boost_SOURCE_DIR}")
 find_package(Boost 1.83 EXACT REQUIRED)
-CPMAddPackage(NAME cgal VERSION 5.6
-    URL https://github.com/CGAL/cgal/releases/download/v5.6/CGAL-5.6.tar.xz
-    URL_HASH SHA256=dcab9b08a50a06a7cc2cc69a8a12200f8d8f391b9b8013ae476965c10b45161f
+# 5.6.2+ fixes invalid iterator base() calls rejected by modern Clang.
+CPMAddPackage(NAME cgal VERSION 5.6.3
+    URL https://github.com/CGAL/cgal/releases/download/v5.6.3/CGAL-5.6.3.tar.xz
+    URL_HASH SHA256=15c743cb395d1a0855b9062525f3ae0cd40486489acfe7ce1457c3710ab34111
     DOWNLOAD_ONLY YES)
 find_package(CGAL 5.6 REQUIRED CONFIG PATHS "${cgal_SOURCE_DIR}" NO_DEFAULT_PATH)
 CPMAddPackage(NAME gmm VERSION 4.2
@@ -75,6 +76,10 @@ target_include_directories(GIF PRIVATE "${gif_root}" "${gif_root}/Utils" "${gmm_
 target_include_directories(GIF SYSTEM BEFORE PRIVATE "${boost_SOURCE_DIR}")
 target_compile_definitions(GIF PRIVATE TRILIBRARY ANSI_DECLARATORS _USE_MATH_DEFINES NOMINMAX
     BCP_MATLAB_SCRIPTS_DIR="${gif_root}/MatlabScripts")
+# GMM 4.2 still uses the removed C++ register storage-class specifier.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(GIF PRIVATE -Wno-register)
+endif()
 # GMM 4.2 predates C++17 and still uses std::binary_function on MSVC.
 if(MSVC)
     target_compile_definitions(GIF PRIVATE _HAS_AUTO_PTR_ETC=1)

@@ -15,32 +15,49 @@ For questions or comments about the code please contact:
 Guy Fargion (guy.fargion@gmail.com)
 
 ----------------------------------------------------------------------------
-The code should be platform independent though we never tested it on other than Windows OS.
+The original code was tested on Windows. The portable build below adds Linux
+and macOS backends.
 
 ## Portable CMake/Pixi build
 
 Dependency management is consolidated in **`pyproject.toml`**, using Pixi for
 both Conda and PyPI packages. CMake/CPM supplies the native build, with separate
-MKL PARDISO (default), Panua PARDISO, and explicit Eigen fallback backends.
+Apple Accelerate (macOS default), MKL PARDISO (Linux/Windows default),
+Panua PARDISO, and explicit Eigen fallback backends.
 
 ```sh
 pixi run test
 pixi run parameterize path/to/disk.obj outputs/disk_cm.obj
 # Full pipeline with a separately installed/licensed MATLAB:
 pixi run -e matlab test
-# Optional Linux-only Octave alternative:
+# MATLAB-free Octave alternative (Linux or Apple Silicon macOS):
 pixi run -e octave test
+# CPU pipeline on macOS (CUDA/MPS are not supported):
+pixi run -e octave parameterize path/to/disk.obj outputs/disk_bcp.obj --device cpu --gif-device cpu
+# Opt-in macOS source-built Octave for restricted sandboxes (not the default):
+pixi run -e octave-source build-octave
+pixi run -e octave-source test
 # Original-style GPU path (MATLAB + CUDA required):
 pixi run -e matlab parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
 # Optional Torch evaluator under Octave (working CUDA required):
 pixi run -e octave parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
 ```
 
-See **[docs/build.md](docs/build.md)** for Linux/Windows targets, runtime
-requirements, validation status and performance caveats. The Linux MKL-backed
-native tests and both complete Octave pipeline variants pass on CPU and CUDA
-(using the Torch evaluator). CM-only execution is not a full BCP run; Windows,
-MATLAB and performance parity remain unverified.
+See **[docs/build.md](docs/build.md)** for platform targets, runtime requirements,
+validation status and performance caveats. macOS selects the system Accelerate
+framework without MKL; native CM/PT tests pass on Apple Silicon. The macOS
+Octave environment installs and GIF compiles, but live Octave validation in the
+current nono sandbox is blocked by its parent-directory access restrictions.
+An explicit `octave-source` environment builds a privately installed, patched
+Octave to use native macOS `getcwd()` without broadening sandbox access. Its
+full CPU suite passes **12/12 CTest checks**, including both complete pipeline
+variants and **62 Python unit tests without skips**, inside the unchanged
+sandbox. The ordinary `octave` environment remains prebuilt. See the build
+guide for details.
+Linux MKL-backed native tests and both complete Octave pipeline variants have
+passed on CPU and CUDA (using the Torch evaluator). CM-only execution is not
+a full BCP run; Intel Mac execution, Windows, MATLAB and performance parity
+remain unverified.
 
 ## Original Windows installation (reference)
 

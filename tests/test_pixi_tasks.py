@@ -16,10 +16,11 @@ spec.loader.exec_module(tasks)
 
 
 class PixiTaskTests(unittest.TestCase):
-    def invoke(self, args, environment="default", octave=True):
+    def invoke(self, args, environment="default", octave=True, platform="linux"):
         with tempfile.TemporaryDirectory() as work, patch.object(tasks, "ROOT", Path(work)), \
              patch.dict(os.environ, {"PIXI_ENVIRONMENT_NAME": environment, "CONDA_PREFIX": work}, clear=True), \
              patch.object(sys, "argv", ["pixi_tasks.py", *args]), \
+             patch.object(tasks.sys, "platform", platform), \
              patch.object(tasks.shutil, "which", return_value="octave-cli" if octave else None), \
              patch.object(tasks.subprocess, "run") as process, redirect_stdout(io.StringIO()):
             tasks.main()
@@ -32,6 +33,62 @@ class PixiTaskTests(unittest.TestCase):
         self.assertIn("-DBCP_BUILD_GIF=OFF", command)
         self.assertIn("-DBCP_TEST_PIPELINE=OFF", command)
         self.assertIn(f"-DPython3_EXECUTABLE={sys.executable}", command)
+
+    def test_macos_defaults_to_accelerate(self):
+        for environment in ("default", "octave"):
+            calls = self.invoke(["test"], environment, platform="darwin")
+            self.assertIn("-DBCP_LINEAR_SOLVER=ACCELERATE", calls[0].args[0])
+            engine = "native" if environment == "default" else "octave"
+            for call in calls:
+                self.assertTrue(any(f"pixi-accelerate-{engine}" in str(arg) for arg in call.args[0]))
+
+    def test_source_environment_explicitly_builds_and_routes_patched_octave(self):
+        executable = "/private/bcp-source/install/bin/octave-cli"
+        with patch.object(tasks, "build_source_octave", return_value=executable) as build:
+            calls = self.invoke(["test"], "octave-source", platform="darwin")
+        build.assert_called_once()
+        self.assertIn(f"-DBCP_OCTAVE_EXECUTABLE={executable}", calls[0].args[0])
+        self.assertIn("-DBCP_SCRIPT_ENGINE=OCTAVE", calls[0].args[0])
+        self.assertIn("-DBCP_TEST_PIPELINE=ON", calls[0].args[0])
+        for call in calls:
+            self.assertEqual(call.kwargs["env"]["BCP_OCTAVE_EXECUTABLE"], executable)
+            self.assertTrue(any("pixi-accelerate-octave-source" in str(arg) for arg in call.args[0]))
+
+    def test_prebuilt_environment_never_builds_octave_from_source(self):
+        with patch.object(tasks, "build_source_octave") as build:
+            calls = self.invoke(["configure"], "octave", platform="darwin")
+        build.assert_not_called()
+        self.assertTrue(any(arg.startswith("-DBCP_OCTAVE_EXECUTABLE=") for arg in calls[0].args[0]))
+        self.assertNotIn("-source", calls[0].kwargs["env"]["BCP_BIN_DIR"])
+
+    def test_source_build_failure_does_not_fall_back_to_prebuilt(self):
+        with patch.object(tasks, "build_source_octave", side_effect=RuntimeError("source build failed")):
+            with self.assertRaisesRegex(RuntimeError, "source build failed"):
+                self.invoke(["test"], "octave-source", platform="darwin")
+
+    def test_source_environment_is_not_supported_on_linux(self):
+        with patch.object(tasks, "build_source_octave") as build:
+            with self.assertRaises(SystemExit) as result:
+                self.invoke(["configure"], "octave-source")
+        self.assertEqual(result.exception.code, 2)
+        build.assert_not_called()
+
+    def test_windows_keeps_mkl_default(self):
+        calls = self.invoke(["configure"], platform="win32")
+        self.assertIn("-DBCP_LINEAR_SOLVER=MKL", calls[0].args[0])
+
+    def test_macos_respects_explicit_solver(self):
+        calls = self.invoke(["configure", "--solver", "EIGEN"], platform="darwin")
+        self.assertIn("-DBCP_LINEAR_SOLVER=EIGEN", calls[0].args[0])
+
+    def test_macos_matlab_runtime_paths(self):
+        for machine, arch in (("arm64", "maca64"), ("x86_64", "maci64")):
+            with patch.object(tasks.sys, "platform", "darwin"), \
+                 patch.object(tasks.platform, "machine", return_value=machine), \
+                 patch.dict(os.environ, {"Matlab_ROOT_DIR": "/Applications/MATLAB.app"}, clear=True):
+                env = tasks.runtime_environment(Path("nonexistent-build"), "matlab")
+                self.assertEqual(env["DYLD_LIBRARY_PATH"], f"/Applications/MATLAB.app/bin/{arch}" + os.pathsep)
+                self.assertNotIn("LD_LIBRARY_PATH", env)
 
     def test_full_environment_requires_integration_gate(self):
         for environment, engine in (("matlab","MATLAB"), ("octave","OCTAVE")):
