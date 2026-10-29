@@ -1,11 +1,11 @@
 #include "Solver.h"
+#include "Clock.h"
 
 #include "Utils.h"
 #include "Energy.h"
 
 #include <iostream>
 #include <igl/readOBJ.h>
-#include <igl/file_dialog_open.h>
 #include <igl/flipped_triangles.h>
 #include <igl/map_vertices_to_circle.h>
 #include <igl/harmonic.h>
@@ -24,20 +24,20 @@ void Solver::init(const MatX3& V, const MatX3i& F, float& time_Tutte_init)
 {
 	using namespace placeholders;
 	this->F = F;
-	long start_init_time = clock();
+	auto start_init_time = bcp::Clock::now();
 	computeTutte(V, F, uv);
-	long end_Tutte_time = clock();
-	time_Tutte_init = (end_Tutte_time - start_init_time) / 1000.0;
+	auto end_Tutte_time = bcp::Clock::now();
+	time_Tutte_init = bcp::seconds(end_Tutte_time, start_init_time);
 	cout << "Tutte init time consumption: " << time_Tutte_init << endl;
 	energy->init(F.rows(), V, F);
 	m_x = Eigen::Map<Vec>(uv.data(), uv.rows() * uv.cols());
 	ext_x = m_x;
 	eval_f = bind(&Energy::evaluate_f, energy, _1, _2);
 	eval_fgh = bind(&Energy::evaluate_fgh, energy, _1, _2, _3, _4);
-	long internal_init_start_time = clock();
+	auto internal_init_start_time = bcp::Clock::now();
 	internal_init();
-	long internal_init_end_time = clock();
-	cout << "internal_init time consumption:" << (internal_init_end_time - internal_init_start_time) / 1000.0 << endl;
+	auto internal_init_end_time = bcp::Clock::now();
+	cout << "internal_init time consumption:" << bcp::seconds(internal_init_end_time, internal_init_start_time) << endl;
 }
 
 void Solver::init_from_input(const MatX3& V, const MatX3i& F, const MatX3& init_uv)
@@ -58,6 +58,7 @@ void Solver::computeTutte(const MatX3& V, const MatX3i& F, MatX2 &uv_init)
 {
 	Eigen::VectorXi bnd; Eigen::MatrixXd bnd_uv;
 	igl::boundary_loop(F,bnd);
+	if (bnd.size() < 3) throw std::runtime_error("Tutte initialization requires a mesh boundary");
 	map_vertices_to_circle_area_normalize(V, F, bnd, bnd_uv);
 
  	igl::harmonic(V,F,bnd,bnd_uv,1,uv_init);

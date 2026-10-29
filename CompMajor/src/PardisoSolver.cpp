@@ -6,6 +6,9 @@
 //
 
 #include "PardisoSolver.h"
+#include <algorithm>
+#include <cstdlib>
+#include <thread>
 #include <igl/sortrows.h>
 #include <igl/unique.h>
 #include <igl/unique_rows.h>
@@ -74,6 +77,9 @@ void PardisoSolver<vectorTypeI,vectorTypeS>::init()
   // else 
  	//  throw std::runtime_error("Set environment OMP_NUM_THREADS to 1");
 	 
+  const char* threads = std::getenv("OMP_NUM_THREADS");
+  num_procs = threads ? std::max(std::atoi(threads), 1)
+                     : static_cast<int>(std::max(std::thread::hardware_concurrency(), 1u));
   iparm[2]  = num_procs;
   
   maxfct = 1;		/* Maximum number of numerical factorizations.  */

@@ -1,8 +1,9 @@
 #pragma once
 
 
-#include "UTILS/GMM_Macros.h"
-#include "Eigen\SparseCore"
+#include "Utils/GMM_Macros.h"
+#include "Eigen/SparseCore"
+#include <iostream>
 #include "pardiso.h"
 
 
@@ -82,7 +83,7 @@ bool PardisoLinearSolver::solve(DenseColMatrixType& RHS, DenseColMatrixType& X)
 
 	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &n, &a[0], &ia[0], &ja[0], &idum, &nrhs, iparm, &msglvl, &b[0], &x[0], &error, dparm);
 	if (error != 0) {
-		cout << "\nERROR during solution: " << error << endl;
+		std::cout << "\nERROR during solution: " << error << std::endl;
 		return false;
 	}
 
@@ -105,7 +106,7 @@ bool PardisoLinearSolver::oneTimeSolve(DenseColMatrixType& RHS, DenseColMatrixTy
 	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &n, &a[0], &ia[0], &ja[0], &idum, &nrhs, iparm, &msglvl, &b[0], &x[0], &error, dparm);
 
 	if (error != 0) {
-		cout << "ERROR during oneTimeSolve: " << error << endl;
+		std::cout << "ERROR during oneTimeSolve: " << error << std::endl;
 		return false;
 	}
 
@@ -128,7 +129,7 @@ bool PardisoLinearSolver::createRHSvector(DenseColMatrixType& RHS)
 	//check vector
 	pardiso_chkvec(&n, &nrhs, &b[0], &error);
 	if (error != 0) {
-		cout << "\nERROR right hand side: " << error << endl;
+		std::cout << "\nERROR right hand side: " << error << std::endl;
 		return false;
 	}
 	return true;

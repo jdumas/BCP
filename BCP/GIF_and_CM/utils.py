@@ -1,13 +1,14 @@
 import torch
+from GIF_and_CM.device import DEVICE
 
 
 def build_face_tangent_frames(verts: torch.Tensor, faces: torch.Tensor) -> torch:
     """
     compute per-face reference coordinate frames
-    expected tensors on CPU, returns a tensor on the GPU
+    expected tensors on CPU, returns a tensor on the selected device
     """
-    verts = verts.to("cuda:0")
-    faces = faces.to("cuda:0")
+    verts = verts.to(DEVICE)
+    faces = faces.to(DEVICE)
     tri_edge_1 = verts[faces[:, 1], :] - verts[faces[:, 0], :]
     tri_edge_2 = verts[faces[:, 2], :] - verts[faces[:, 0], :]
     axis_x = tri_edge_1

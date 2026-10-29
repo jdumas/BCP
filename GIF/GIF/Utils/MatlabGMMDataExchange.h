@@ -29,15 +29,15 @@ namespace MatlabGMMDataExchange
 template<class SparseRowMatrixType>
 bool MatlabGMMDataExchange::isMatrixValid(const SparseRowMatrixType& M)
 {
-	gmm::linalg_traits<SparseRowMatrixType>::const_row_iterator rowIter = mat_row_const_begin(M);
-	gmm::linalg_traits<SparseRowMatrixType>::const_row_iterator rowIterEnd = mat_row_const_end(M);
+	auto rowIter = mat_row_const_begin(M);
+	auto rowIterEnd = mat_row_const_end(M);
 
 	for(; rowIter != rowIterEnd; rowIter++)
 	{
-		gmm::linalg_traits<SparseRowMatrixType>::const_sub_row_type row = gmm::linalg_traits<SparseRowMatrixType>::row(rowIter);
+		typename gmm::linalg_traits<SparseRowMatrixType>::const_sub_row_type row = gmm::linalg_traits<SparseRowMatrixType>::row(rowIter);
 
-		gmm::linalg_traits<gmm::linalg_traits<SparseRowMatrixType>::const_sub_row_type>::const_iterator elementIter = vect_const_begin(row);
-		gmm::linalg_traits<gmm::linalg_traits<SparseRowMatrixType>::const_sub_row_type>::const_iterator elementIterEnd = vect_const_end(row);
+		auto elementIter = vect_const_begin(row);
+		auto elementIterEnd = vect_const_end(row);
 
 		for(; elementIter != elementIterEnd; elementIter++)
 		{

@@ -17,7 +17,32 @@ Guy Fargion (guy.fargion@gmail.com)
 ----------------------------------------------------------------------------
 The code should be platform independent though we never tested it on other than Windows OS.
 
-## Installlation
+## Portable CMake/Pixi build
+
+Dependency management is consolidated in **`pyproject.toml`**, using Pixi for
+both Conda and PyPI packages. CMake/CPM supplies the native build, with separate
+MKL PARDISO (default), Panua PARDISO, and explicit Eigen fallback backends.
+
+```sh
+pixi run test
+pixi run parameterize path/to/disk.obj outputs/disk_cm.obj
+# Full pipeline with a separately installed/licensed MATLAB:
+pixi run -e matlab test
+# Optional Linux-only Octave alternative:
+pixi run -e octave test
+# Original-style GPU path (MATLAB + CUDA required):
+pixi run -e matlab parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
+# Optional Torch evaluator under Octave (working CUDA required):
+pixi run -e octave parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
+```
+
+See **[docs/build.md](docs/build.md)** for Linux/Windows targets, runtime
+requirements, validation status and performance caveats. The Linux MKL-backed
+native tests and both complete Octave pipeline variants pass on CPU and CUDA
+(using the Torch evaluator). CM-only execution is not a full BCP run; Windows,
+MATLAB and performance parity remain unverified.
+
+## Original Windows installation (reference)
 
 ### 1) GIF
 A Visual Studio 2019 project is provided for easy compilation on Windows machines.

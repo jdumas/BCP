@@ -103,7 +103,7 @@ def compute_stats_to_summary(
             pred_V,
         )
 
-        igl.write_obj(tpath + "_source_textured_by_uv_ours_uvs.obj", np.hstack([pred_V, np.zeros((pred_V.shape[0], 1))]), source_T)
+        igl.write_triangle_mesh(tpath + "_source_textured_by_uv_ours_uvs.obj", np.hstack([pred_V, np.zeros((pred_V.shape[0], 1))]), source_T)
 
     if compare_to_GIF:
         print("Comparing to GIF!")
@@ -147,7 +147,7 @@ def compute_stats_to_summary(
                 source_T,
                 uvs_from_GIF,
             )
-            igl.write_obj(tpath + "_source_textured_by_uv_GIF_uvs.obj", np.hstack([uvs_from_GIF, np.zeros((uvs_from_GIF.shape[0], 1))]), source_T)
+            igl.write_triangle_mesh(tpath + "_source_textured_by_uv_GIF_uvs.obj", np.hstack([uvs_from_GIF, np.zeros((uvs_from_GIF.shape[0], 1))]), source_T)
     else:
         cur_stats[config.stats_results_df_cols.GIF_E_SD] = 0
         cur_stats[config.stats_results_df_cols.GIF_E_SD_BEST_99_99] = 0
@@ -189,7 +189,7 @@ def compute_stats_to_summary(
                 source_T,
                 uvs_from_CM,
             )
-            igl.write_obj(tpath + "_source_textured_by_uv_CM_uvs.obj", np.hstack([uvs_from_CM, np.zeros((uvs_from_CM.shape[0], 1))]), source_T)
+            igl.write_triangle_mesh(tpath + "_source_textured_by_uv_CM_uvs.obj", np.hstack([uvs_from_CM, np.zeros((uvs_from_CM.shape[0], 1))]), source_T)
     else:
         cur_stats[config.stats_results_df_cols.CM_TIME] = 0
         cur_stats[config.stats_results_df_cols.CM_ITERS] = 0

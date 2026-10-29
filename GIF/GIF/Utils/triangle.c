@@ -321,6 +321,7 @@
 #define ONETHIRD 0.333333333333333333333333333333333333333333333333333333333333
 
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -12473,7 +12474,7 @@ char *polyfilename;
       printf("Recovering segments in Delaunay triangulation.\n");
     }
 #ifdef TRILIBRARY
-    strcpy_s(polyfilename, 6, "input");
+    memcpy(polyfilename, "input", 6);
     m->insegments = numberofsegments;
     segmentmarkers = segmentmarkerlist != (int *) NULL;
     index = 0;

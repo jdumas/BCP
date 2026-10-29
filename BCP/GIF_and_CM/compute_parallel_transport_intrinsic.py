@@ -1,7 +1,8 @@
 import os
 import time
-from datetime import datetime
-from subprocess import PIPE, Popen
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from process_utils import run_native
 
 import igl
 import numpy as np
@@ -114,7 +115,7 @@ def compute_parallel_transport_intrinsic_vertex_to_face(
     transition_angles = np.zeros_like(f).astype(np.float64)  # ordering: [[i->j, j->k, k->i], ...]
 
     boundary_verts = []
-    boundary_loops = igl.all_boundary_loop(f)
+    boundary_loops = igl.all_boundary_loop(f) if hasattr(igl, "all_boundary_loop") else [boundary_loop]
     for loop in boundary_loops:
         for i in range(len(loop)):
             boundary_verts.append((loop[i]))
@@ -143,15 +144,7 @@ def compute_parallel_transport_intrinsic_vertex_to_face(
 
     one_rings_time = end_time - start_time
 
-    while True:
-        i = 0
-        try:
-            angles_vertices_to_faces, middle_angle_time = compute_middle_angle(f, one_rings, integrated_angles, all_one_ring_angles)
-            break
-        except:
-            print(f"Failed attempt number {i}")
-            i += 1
-            continue
+    angles_vertices_to_faces, middle_angle_time = compute_middle_angle(f, one_rings, integrated_angles, all_one_ring_angles)
 
 
     # Compute the coordinates of the incenter (weighted average)
@@ -206,22 +199,20 @@ def compute_parallel_transport_intrinsic_vertex_to_face(
     return complex_rotations, total_time
 
 def compute_middle_angle(f, one_rings, integrated_angles, all_one_ring_angles):
-    cur_time = datetime.now().strftime("%Y%m%d%H%M%S")
-    tmp_source_matrices_file = ROOT_DIR_CACHE_PARALLEL_TRANSPORT + "/" + cur_time + "_source_matrices.mat"
-    tmp_res_file = ROOT_DIR_CACHE_PARALLEL_TRANSPORT + "/" + cur_time + "_res.mat"
-    savemat(tmp_source_matrices_file, {'f': f.astype(np.float64), 'one_rings': one_rings.astype(np.float64), 'integrated_angles': integrated_angles.astype(np.float64), 'all_one_ring_angles': all_one_ring_angles.astype(np.float64), 'all_one_ring_angles_sums': all_one_ring_angles.sum(axis=1).astype(np.float64)})
-
-    EXE_FILE_DIR, EXE_FILE_NAME = ROOT_PATH_PARALLEL_TRANSPORT_EXE.rsplit("/", 1)
-    cmdline = f"{EXE_FILE_NAME} {tmp_source_matrices_file} {tmp_res_file} 1"
-    p = Popen("cmd /c " + cmdline, cwd=EXE_FILE_DIR, shell=True, stdout=PIPE, stderr=PIPE)
-    p.wait()
-    res_angles = loadmat(tmp_res_file)
-    os.remove(tmp_source_matrices_file)
-    os.remove(tmp_res_file)
-    angles_vertices_to_faces = res_angles["angles_vertices_to_faces"]
-    total_time = float(res_angles["total_time"][0, 0])
-
-    return angles_vertices_to_faces, total_time
+    Path(ROOT_DIR_CACHE_PARALLEL_TRANSPORT).mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="pt-", dir=ROOT_DIR_CACHE_PARALLEL_TRANSPORT) as work:
+        source = str(Path(work) / "source.mat")
+        result = str(Path(work) / "result.mat")
+        savemat(source, {
+            "f": f.astype(np.float64),
+            "one_rings": one_rings.astype(np.float64),
+            "integrated_angles": integrated_angles.astype(np.float64),
+            "all_one_ring_angles": all_one_ring_angles.astype(np.float64),
+            "all_one_ring_angles_sums": all_one_ring_angles.sum(axis=1, keepdims=True).astype(np.float64),
+        })
+        run_native(ROOT_PATH_PARALLEL_TRANSPORT_EXE, [source, result, 1], 300)
+        data = loadmat(result)
+        return data["angles_vertices_to_faces"], float(np.real(data["total_time"][0, 0]))
 
 
 def interpolate_faces_dimensional_data_to_vertices_torch(faces, vals, complex_rotations_f_to_v, W):

@@ -1,11 +1,35 @@
 #include <cassert>
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <fstream>
+#include <sstream>
+#include <stdexcept>
 #include <algorithm>
-#include <windows.h>
+
+#ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+    #ifdef ERROR // wingdi.h defines ERROR, which clashes with the logging macro below
+        #undef ERROR
+    #endif
+#else
+    #include <functional>
+    #include <thread>
+#endif
 
 #include "MatlabInterface.h"
 
+// This file uses the interleaved complex matrix API (mxGetDoubles, mxComplexDouble),
+// which matrix.h only exposes for the R2018a API.
+#if !defined(MATLAB_DEFAULT_RELEASE) && !defined(TARGET_API_VERSION) && !defined(MX_HAS_INTERLEAVED_COMPLEX)
+    #define MATLAB_DEFAULT_RELEASE R2018a
+#endif
 #include "engine.h"  // Matlab engine header
 #define NO_LOGGER
 // 
@@ -103,6 +127,16 @@ template int MatlabInterface::CopyFromComplexMatrix    <double>(mxArray *M, unsi
 
 DWORD MatlabInterface::mThreadIdUsedToOpenEngine = 0;
 
+// Identifier of the calling thread, used to detect engine use from a thread other than the one that opened it.
+static DWORD CurrentEngineThreadId()
+{
+#ifdef _WIN32
+	return GetCurrentThreadId();
+#else
+	return static_cast<DWORD>(std::hash<std::thread::id>()(std::this_thread::get_id()));
+#endif
+}
+
 MatlabInterface::MatlabInterface() : m_ep(NULL), mOutputStringBuffer(NULL)
 {
 
@@ -111,20 +145,28 @@ MatlabInterface::MatlabInterface() : m_ep(NULL), mOutputStringBuffer(NULL)
 
 	cout << "Starting Matlab engine" << endl;
 
-	EngineOpen();
-	EngineSetupUI();
+	try
+	{
+		EngineOpen();
+		EngineSetupUI();
+	}
+	catch (...)
+	{
+		EngineClose();
+		delete[] mOutputStringBuffer;
+		mOutputStringBuffer = NULL;
+		throw;
+	}
 }
 
 
 
 MatlabInterface::~MatlabInterface()
 {
-//  EngineClose();
+	// EngineClose() detaches the output buffer before the buffer is deallocated.
+	EngineClose();
 	delete[] mOutputStringBuffer;
 	mOutputStringBuffer = NULL;
-
-	//make sure that Matlab output buffer is nullified to prevent Matlab from accessing memory that is deallocated.
-	engOutputBuffer(m_ep, NULL, 0);
 }
 
 
@@ -139,11 +181,20 @@ void MatlabInterface::EngineOpen()
 	// For more complicated cases, use any string with whitespace,
 	// and that string will be executed literally to start MATLAB
 	//
-	if (!(m_ep = engOpen("\0"))) {
+	EngineClose();
+#ifdef _WIN32
+	// On Windows the start command must be NULL (starts the MATLAB COM engine)
+	m_ep = engOpen(NULL);
+#else
+	// A command containing whitespace is executed literally; never launch the desktop
+	m_ep = engOpen("matlab -nodesktop -nosplash");
+#endif
+	if (m_ep == NULL) {
 		ERROR("Can't start MATLAB engine");
-		return;
+		throw std::runtime_error("Can't start MATLAB engine (engOpen failed)");
 	}
 	//let Matlab know where to issue to textual output
+	mOutputStringBuffer[0] = 0;
 	int res = engOutputBuffer(m_ep, mOutputStringBuffer, MAX_OUTPUT_BUFFER_SIZE - 1);
 
 	if (res != 0)
@@ -151,29 +202,31 @@ void MatlabInterface::EngineOpen()
 		ERROR("Unable to set Matlab output buffer");
 	}
 
-	mThreadIdUsedToOpenEngine = GetCurrentThreadId();
+	mThreadIdUsedToOpenEngine = CurrentEngineThreadId();
 }
 
 
 void MatlabInterface::EngineSetupUI()
 {
+#ifdef _WIN32
 	int res = engSetVisible(m_ep, false); //turn the white matlab command window OFF
 	if (res != 0)
 	{
 		ERROR("Unable to turn off Matlab engine's white console window");
 	}
-	res = engEvalString(m_ep, "desktop");  //turn the entire GUI of matlab ON
-	if (res != 0)
-	{
-		ERROR("Unable to turn on Matlab full GUI");
-	}
+#endif
+	// The engine stays headless: the MATLAB desktop is not launched.
 }
 
 
 void MatlabInterface::EngineClose()
 {
-    engClose(m_ep);
-    m_ep = NULL;
+	if (m_ep == NULL)
+		return;
+	//make sure that Matlab output buffer is detached to prevent Matlab from accessing memory that is deallocated.
+	engOutputBuffer(m_ep, NULL, 0);
+	engClose(m_ep);
+	m_ep = NULL;
 }
 
 
@@ -482,7 +535,7 @@ MatlabInterface::SetEngineSparseRealMatrix(const char *name, unsigned int n,
     }
     else {
         assert(ncols > 0 && nrows > 0);
-        sprintf(cmd, "%s = sparse(%s(:,1), %s(:,2), %s(:,3), %d, %d);", name, name, name, name, nrows, ncols);
+        sprintf(cmd, "%s = sparse(%s(:,1), %s(:,2), %s(:,3), %u, %u);", name, name, name, name, nrows, ncols);
     }
     res = engEvalString(m_ep, cmd);
     return res;
@@ -509,11 +562,11 @@ MatlabInterface::SetEngineSparseComplexMatrix(const char *name, unsigned int n,
     if (res != 0) return res;
     char cmd[1024];
     if (ncols == 0 || nrows == 0) {
-        sprintf(cmd, "%s = sparse(%s(:,1), %s(:,2), %s(:,3));", name, name, name, name);
+        sprintf(cmd, "%s = sparse(real(%s(:,1)), real(%s(:,2)), %s(:,3));", name, name, name, name);
     }
     else {
         assert(ncols > 0 && nrows > 0);
-        sprintf(cmd, "%s = sparse(%s(:,1), %s(:,2), %s(:,3), %d, %d);", name, name, name, name, nrows, ncols);
+        sprintf(cmd, "%s = sparse(real(%s(:,1)), real(%s(:,2)), %s(:,3), %u, %u);", name, name, name, name, nrows, ncols);
     }
     res = engEvalString(m_ep, cmd);
     return res;
@@ -652,23 +705,21 @@ MatlabInterface::GetEngineComplexMatrix(const char *name, unsigned int& m, unsig
 }
 
 
-//evaluate a single line. returns non-zero on error.
+// engEvalString reports transport errors, not MATLAB script errors. Capture a
+// script-error marker in the existing output buffer without another IPC roundtrip.
 int MatlabInterface::Eval(const char *matlab_code)
 {
-	int res = engEvalString(m_ep, matlab_code);
-	//if ( 1&& res != 0 )	{
-	int retries = 5; // doesn't help
-	while ( res != 0 )	{
-		ERROR("Error " << res << " running matlab command \"" << matlab_code << "\"");
-		if ( --retries < 0 )
-			break;
-		ERROR("Resetting the engine and trying again " << retries);
-		//assert(0);
-		GetEngine(true);
-		//res = engEvalString(m_ep, "1;"); // first eval after a problem usually fails
-		res = engEvalString(m_ep, matlab_code);
-	}
-	return res;
+	if (!matlab_code || !m_ep) throw std::runtime_error("MATLAB engine/command is unavailable");
+	const char* marker = "__BCP_MATLAB_EVAL_ERROR__";
+	std::string command = std::string("try\n") + matlab_code +
+		"\ncatch BCP_EVAL_EXCEPTION\n" +
+		"fprintf(1, '__BCP_MATLAB_EVAL_ERROR__ %s\\n', BCP_EVAL_EXCEPTION.message);\n" +
+		"clear BCP_EVAL_EXCEPTION;\nend;";
+	mOutputStringBuffer[0] = 0;
+	const int res = engEvalString(m_ep, command.c_str());
+	if (res != 0 || std::strstr(mOutputStringBuffer, marker))
+		throw std::runtime_error(std::string("MATLAB command failed: ") + mOutputStringBuffer);
+	return 0;
 }
 
 
@@ -704,7 +755,7 @@ std::string MatlabInterface::EvalToString(const char *matlab_code, int &res, boo
 		Eval("if ~exist('EVAL_TO_COUT', 'var'); EVAL_TO_COUT={LAST_EVAL_TO_COUT}; end; EVAL_TO_COUT = [LAST_EVAL_TO_COUT; EVAL_TO_COUT(1:min(99,end))];");
 	}
 
-	res = Eval(matlab_code); // This returns an API runtime error and not a script error.
+	res = Eval(matlab_code); // Transport and script errors throw; no stale-workspace retries.
 	if (res != 0) {
 		std::ostringstream oss;
 		oss << "ERROR: Matlab command failed with error code " << res << ".\n";
@@ -722,7 +773,15 @@ std::string MatlabInterface::EvalToString(const char *matlab_code, int &res, boo
 int
 MatlabInterface::AddScriptPath(const char *path)
 {
-    std::string matlab_addpath = std::string("addpath('") + path + "')";
+    // Quote the path as a MATLAB char literal: single quotes are escaped by doubling them.
+    std::string quoted_path;
+    for (const char *c = path; *c != 0; ++c)
+    {
+        if (*c == '\'')
+            quoted_path += '\'';
+        quoted_path += *c;
+    }
+    std::string matlab_addpath = std::string("addpath('") + quoted_path + "')";
     int res = this->Eval(matlab_addpath.c_str());
     return res;
 }
@@ -733,13 +792,14 @@ MatlabInterface &MatlabInterface::GetEngine(bool restart)
 {
 	static MatlabInterface matlab;
 	
-	DWORD currentThreadID = GetCurrentThreadId();
+	DWORD currentThreadID = CurrentEngineThreadId();
 	//cout << "Current thread id: " << currentThreadID << endl;
 
 	if (restart || (currentThreadID != mThreadIdUsedToOpenEngine))
 	{
 		matlab.EngineClose();
 		matlab.EngineOpen();
+		matlab.EngineSetupUI();
 	}
 
 	return matlab;

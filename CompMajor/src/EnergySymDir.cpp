@@ -143,7 +143,7 @@ void DistortionSymDir::hessian(const MatX2& X)
 	//anti similarity beta
 	Eigen::VectorXd cY = 0.5*(a - d);
 	Eigen::VectorXd dY = 0.5*(b + c);
-#pragma omp parallel for num_threads(24)
+#pragma omp parallel for
 	for (int i = 0; i < numF; ++i) {
 		//vectors of size 6
 		//svd derivatives
@@ -205,7 +205,7 @@ bool DistortionSymDir::updateJ(const MatX2& X)
 void DistortionSymDir::UpdateSSVDFunction()
 {
 
-#pragma omp parallel for num_threads(24)
+#pragma omp parallel for
 	for (int i = 0; i < a.size(); i++)
 	{
 		Eigen::Matrix2d A;

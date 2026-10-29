@@ -6,6 +6,9 @@
 #include <atomic>
 #include <functional>
 #include <shared_mutex>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 using namespace std;
 
 class Solver

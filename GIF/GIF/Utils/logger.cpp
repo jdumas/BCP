@@ -81,7 +81,7 @@ void Logger::initialize()
 	(*m_out) << std::unitbuf; // turn buffering off
     m_clean_up_file = false;
     m_auto_flush = true;
-    m_null = std::auto_ptr<std::ostream>(new boost::onullstream()); // acts like /dev/null
+    m_null = std::unique_ptr<std::ostream>(new boost::onullstream()); // acts like /dev/null
 }
 
 

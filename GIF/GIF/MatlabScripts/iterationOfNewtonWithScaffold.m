@@ -10,11 +10,14 @@ if iter ~= 0
     numConvIters=5;
 end
 
-use_GPU = true;
-
-if size(GIF.F1, 1) > 2e5
-    use_GPU = true;
+% Keep the original GPU kernels. The CLI validates and caches the selection.
+if isfield(GIF, 'useGPU')
+    use_GPU = GIF.useGPU;
+else
+    use_GPU = bcp_gpu_enabled('auto');
 end
+
+use_torch = isfield(GIF, 'computeBackend') && strcmp(GIF.computeBackend, 'torch');
 
 n=(length(x_initial)+length(GIF.FixedIndices))/2;
 SPDHessian=true;
@@ -39,7 +42,11 @@ GIF.initTotalEnergy=E;
 GIF.initEnergy=E;
 timesRemeshed = timesRemeshed + 1;
 EitersCounter=0;
-if use_GPU
+if use_torch
+    % One upload per scaffold/remesh. Inner steps send only x over binary pipes.
+    hessian_indices = [numDOF1:(numDOFScaffold-1), (almostAllVars+1):totVars]';
+    bcp_torch_energy('prepare', GIF.TJ_fz, GIF.TJ_fbz, GIF.TArea, GIF.FixedIndices, GIF.FixedValues, hessian_indices);
+elseif use_GPU
     % move arrays to gpu
     J_fz_gpu=gpuArray(GIF.TJ_fz);
     J_fbz_gpu=gpuArray(GIF.TJ_fbz);
@@ -51,7 +58,9 @@ for i=1:100
     Eprev=E;
 
     % ****find energy,gradient, hessian****
-    if use_GPU
+    if use_torch
+        [foldoversIndices, fz, fbz, E, G, H] = bcp_torch_energy('evaluate', x_initial, SPDHessian, 0);
+    elseif use_GPU
         x_gpu=gpuArray(x_initial);
         [foldoversIndices, fz_gpu,fbz_gpu,E_gpu,G_gpu,H_gpu ] = symmetricDirichletEnergy(x_gpu,J_fz_gpu,J_fbz_gpu,Area_gpu,GIF.FixedIndices,FixedValues_gpu,SPDHessian, 0);
 
@@ -67,7 +76,11 @@ for i=1:100
     GIF.foldoversIndices1 = foldoversIndices;
 
     % ****solve****
-    H1=[H([numDOF1:(numDOFScaffold-1)], [numDOF1:(numDOFScaffold-1)]), H([numDOF1:(numDOFScaffold-1)], [(almostAllVars+1):totVars]); H([(almostAllVars+1):totVars], [numDOF1:(numDOFScaffold-1)]), H([(almostAllVars+1):totVars], [(almostAllVars+1):totVars])];
+    if use_torch
+        H1=H; % The same submatrix is selected on-device before downloading.
+    else
+        H1=[H([numDOF1:(numDOFScaffold-1)], [numDOF1:(numDOFScaffold-1)]), H([numDOF1:(numDOFScaffold-1)], [(almostAllVars+1):totVars]); H([(almostAllVars+1):totVars], [numDOF1:(numDOFScaffold-1)]), H([(almostAllVars+1):totVars], [(almostAllVars+1):totVars])];
+    end
     G1=[G([numDOF1:(numDOFScaffold-1)], :);G([(almostAllVars+1):totVars], :)];
 
     [R,p]=chol(H1);
