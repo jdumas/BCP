@@ -28,13 +28,19 @@ void run(Solver& s, int phase, double* a, int* ia, int* ja, int nrhs,
     // copy legacy iparm[2] (threads), [27] (reordering), or [35] (selected inverse).
     for (int i : {7, 10, 12}) s.control[i] = legacy[i];
     MKL_INT p = phase, count = nrhs;
+    // MKL disables its factor-nonzero report once the slot is nonnegative, so
+    // re-enable it for every new symbolic analysis.
+    if (phase == 11 || phase == 12 || phase == 13) s.control[17] = -1;
     s.control[27] = 0; // double precision
     s.control[34] = 0; // one-based indices
     s.control[35] = 0; // no Schur complement
     ::pardiso(s.handle.data(), &maxfct, &mnum, &s.type, &p, &s.n, a, ia, ja,
               s.permutation.data(), &count, s.control.data(), &msglvl,
               rhs, solution, &error);
-    for (int i : {6, 17, 18}) legacy[i] = s.control[i];
+    // Output-only statistics with the same slot meaning in Panua and MKL:
+    // refinement steps, perturbed pivots, memory (KB), factor nonzeros,
+    // MFLOPS (left disabled) and inertia. Parallelism slots are never copied.
+    for (int i : {6, 13, 14, 15, 16, 17, 18, 21, 22}) legacy[i] = s.control[i];
 }
 }
 

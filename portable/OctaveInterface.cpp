@@ -31,6 +31,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <dirent.h>
@@ -546,106 +547,165 @@ int saveOctaveVarToMatFile(Engine* ep,
     return 0;
 }
 
-bool readRealDataAsDoubles(matvar_t* var, std::vector<double>& out, size_t expectedCount) {
-    out.assign(expectedCount, 0.0);
-    if (expectedCount == 0) return true;
-    if (!var || !var->data || var->isComplex) return false;
+// Reads `kTempTransferVar` from a MAT file saved by saveOctaveVarToMatFile as a
+// dense rank-2 matio variable. Members are destroyed in reverse order: the
+// variable, the open file and finally the file itself.
+class DenseMatTransfer {
+public:
+    DenseMatTransfer(Engine* ep,
+                     char* outputBuf,
+                     const char* name,
+                     const char* pathPrefix,
+                     const char* openFailure,
+                     const char* invalidVariable)
+        : cleanup_(ep->nextMatPath(pathPrefix)) {
+        saveOctaveVarToMatFile(ep, outputBuf, name, cleanup_.path);
+        file_.fp = Mat_Open(cleanup_.path.c_str(), MAT_ACC_RDONLY);
+        if (!file_.fp) {
+            throw std::runtime_error(std::string(openFailure) + name);
+        }
+        var_.var = Mat_VarRead(file_.fp, kTempTransferVar);
+        if (!var_.var || var_.var->rank != 2 || var_.var->class_type == MAT_C_SPARSE) {
+            throw std::runtime_error(std::string(invalidVariable) + name);
+        }
+    }
 
+    DenseMatTransfer(const DenseMatTransfer&) = delete;
+    DenseMatTransfer& operator=(const DenseMatTransfer&) = delete;
+
+    const matvar_t* var() const { return var_.var; }
+    unsigned int rows() const { return static_cast<unsigned int>(var_.var->dims[0]); }
+    unsigned int cols() const { return static_cast<unsigned int>(var_.var->dims[1]); }
+
+private:
+    MatFileCleanupRAII cleanup_;
+    MatOpenRAII file_{nullptr};
+    MatVarRAII var_{nullptr};
+};
+
+void requireExpectedSize(const char* method,
+                         unsigned int expectedM,
+                         unsigned int expectedN,
+                         unsigned int actualM,
+                         unsigned int actualN) {
+    if (actualM == expectedM && actualN == expectedN) return;
+    std::ostringstream oss;
+    oss << method << ": expected size " << expectedM << "x" << expectedN << ". Got "
+        << actualM << "x" << actualN << ".";
+    ERROR_LOG(oss.str());
+    throw std::runtime_error(oss.str());
+}
+
+// Calls visit(matIndex, destIndex) for every element of an m-by-n MAT
+// (column-major) array, mapping it to a column- or row-major destination.
+template <typename Visit>
+void forEachMatElement(size_t m, size_t n, bool colmaj, Visit visit) {
+    if (colmaj) {
+        const size_t total = m * n;
+        for (size_t k = 0; k < total; ++k) visit(k, k);
+        return;
+    }
+    for (size_t j = 0; j < n; ++j) {
+        for (size_t i = 0; i < m; ++i) visit(j * m + i, i * n + j);
+    }
+}
+
+template <typename T> struct ScalarOf { using type = T; };
+template <typename T> struct ScalarOf<std::complex<T>> { using type = T; };
+
+// Matio stores each numeric MAT class read by Mat_VarRead in its own C type.
+bool isDecodableRealData(const matvar_t* var, size_t total) {
+    if (total == 0) return true;
+    if (!var || !var->data || var->isComplex) return false;
     switch (var->data_type) {
-        case MAT_T_DOUBLE: {
-            const double* p = static_cast<const double*>(var->data);
-            std::copy(p, p + expectedCount, out.begin());
+        case MAT_T_DOUBLE:
+        case MAT_T_SINGLE:
+        case MAT_T_INT64:
+        case MAT_T_UINT64:
+        case MAT_T_INT32:
+        case MAT_T_UINT32:
+        case MAT_T_INT16:
+        case MAT_T_UINT16:
+        case MAT_T_INT8:
+        case MAT_T_UINT8:
             return true;
-        }
-        case MAT_T_SINGLE: {
-            const float* p = static_cast<const float*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_INT64: {
-            const int64_t* p = static_cast<const int64_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_UINT64: {
-            const uint64_t* p = static_cast<const uint64_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_INT32: {
-            const int32_t* p = static_cast<const int32_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_UINT32: {
-            const uint32_t* p = static_cast<const uint32_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_INT16: {
-            const int16_t* p = static_cast<const int16_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_UINT16: {
-            const uint16_t* p = static_cast<const uint16_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_INT8: {
-            const int8_t* p = static_cast<const int8_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
-        case MAT_T_UINT8: {
-            const uint8_t* p = static_cast<const uint8_t*>(var->data);
-            for (size_t i = 0; i < expectedCount; ++i) out[i] = static_cast<double>(p[i]);
-            return true;
-        }
         default:
             return false;
     }
 }
 
-bool readComplexOrRealDataAsComplexDoubles(matvar_t* var,
-                                           std::vector<std::complex<double>>& out,
-                                           size_t expectedCount) {
-    out.assign(expectedCount, std::complex<double>(0.0, 0.0));
-    if (expectedCount == 0) return true;
+bool isDecodableComplexData(const matvar_t* var, size_t total) {
+    if (total == 0) return true;
     if (!var || !var->data) return false;
+    if (!var->isComplex) return isDecodableRealData(var, total);
+    const auto* split = static_cast<const mat_complex_split_t*>(var->data);
+    if (!split->Re || !split->Im) return false;
+    return var->data_type == MAT_T_DOUBLE || var->data_type == MAT_T_SINGLE;
+}
 
-    if (!var->isComplex) {
-        std::vector<double> realVals;
-        if (!readRealDataAsDoubles(var, realVals, expectedCount)) return false;
-        for (size_t i = 0; i < expectedCount; ++i) {
-            out[i] = std::complex<double>(realVals[i], 0.0);
+// Converts each element through double, as MATLAB/Octave numeric data would be,
+// and writes it straight into the caller's layout.
+template <typename Source, typename Dest>
+void decodeRealElements(const void* data, size_t m, size_t n, bool colmaj, Dest* dest) {
+    using Scalar = typename ScalarOf<Dest>::type;
+    const Source* source = static_cast<const Source*>(data);
+    if constexpr (std::is_same<Source, Dest>::value) {
+        if (colmaj) {
+            std::copy(source, source + m * n, dest);
+            return;
         }
-        return true;
     }
+    forEachMatElement(m, n, colmaj, [&](size_t from, size_t to) {
+        dest[to] = Dest(static_cast<Scalar>(static_cast<double>(source[from])));
+    });
+}
 
-    const mat_complex_split_t* split = static_cast<const mat_complex_split_t*>(var->data);
-    if (!split || !split->Re || !split->Im) return false;
-
+// Precondition: isDecodableRealData(var, m * n). Dest is T or std::complex<T>.
+template <typename Dest>
+void decodeRealData(const matvar_t* var, size_t m, size_t n, bool colmaj, Dest* dest) {
+    if (m * n == 0) return;
     switch (var->data_type) {
-        case MAT_T_DOUBLE: {
-            const double* re = static_cast<const double*>(split->Re);
-            const double* im = static_cast<const double*>(split->Im);
-            for (size_t i = 0; i < expectedCount; ++i) {
-                out[i] = std::complex<double>(re[i], im[i]);
-            }
-            return true;
-        }
-        case MAT_T_SINGLE: {
-            const float* re = static_cast<const float*>(split->Re);
-            const float* im = static_cast<const float*>(split->Im);
-            for (size_t i = 0; i < expectedCount; ++i) {
-                out[i] = std::complex<double>(static_cast<double>(re[i]),
-                                              static_cast<double>(im[i]));
-            }
-            return true;
-        }
-        default:
-            return false;
+        case MAT_T_DOUBLE: decodeRealElements<double>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_SINGLE: decodeRealElements<float>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_INT64: decodeRealElements<int64_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_UINT64: decodeRealElements<uint64_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_INT32: decodeRealElements<int32_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_UINT32: decodeRealElements<uint32_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_INT16: decodeRealElements<int16_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_UINT16: decodeRealElements<uint16_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_INT8: decodeRealElements<int8_t>(var->data, m, n, colmaj, dest); return;
+        case MAT_T_UINT8: decodeRealElements<uint8_t>(var->data, m, n, colmaj, dest); return;
+        default: throw std::logic_error("decodeRealData called with an undecodable MAT type");
+    }
+}
+
+template <typename Source, typename T>
+void decodeSplitComplexElements(const mat_complex_split_t* split,
+                                size_t m,
+                                size_t n,
+                                bool colmaj,
+                                std::complex<T>* dest) {
+    const Source* re = static_cast<const Source*>(split->Re);
+    const Source* im = static_cast<const Source*>(split->Im);
+    forEachMatElement(m, n, colmaj, [&](size_t from, size_t to) {
+        dest[to] = std::complex<T>(static_cast<T>(static_cast<double>(re[from])),
+                                   static_cast<T>(static_cast<double>(im[from])));
+    });
+}
+
+// Precondition: isDecodableComplexData(var, m * n).
+template <typename T>
+void decodeComplexData(const matvar_t* var, size_t m, size_t n, bool colmaj, std::complex<T>* dest) {
+    if (m * n == 0) return;
+    if (!var->isComplex) {
+        decodeRealData(var, m, n, colmaj, dest);
+        return;
+    }
+    const auto* split = static_cast<const mat_complex_split_t*>(var->data);
+    if (var->data_type == MAT_T_DOUBLE) {
+        decodeSplitComplexElements<double>(split, m, n, colmaj, dest);
+    } else {
+        decodeSplitComplexElements<float>(split, m, n, colmaj, dest);
     }
 }
 
@@ -810,21 +870,33 @@ int MatlabInterface::SetEngineRealMatrix(const char* name,
     }
 
     const size_t total = static_cast<size_t>(m) * static_cast<size_t>(n);
-    std::vector<double> colMajorData(total, 0.0);
-    if (vals != nullptr) {
-        if (colmaj) {
-            for (size_t i = 0; i < total; ++i) {
-                colMajorData[i] = static_cast<double>(vals[i]);
-            }
-        } else {
-            for (unsigned int j = 0; j < n; ++j) {
-                for (unsigned int i = 0; i < m; ++i) {
-                    size_t idxM = static_cast<size_t>(j) * m + i;
-                    size_t idx = static_cast<size_t>(i) * n + j;
-                    colMajorData[idxM] = static_cast<double>(vals[idx]);
+    // Column-major double input is already in MAT layout, so matio borrows it.
+    // Other inputs are staged once in the converted layout MAT v5 requires.
+    const double* matData = nullptr;
+    std::vector<double> colMajorData;
+    if constexpr (std::is_same<T, double>::value) {
+        if (vals != nullptr && colmaj && total > 0) {
+            matData = vals;
+        }
+    }
+    if (!matData) {
+        colMajorData.assign(total, 0.0);
+        if (vals != nullptr) {
+            if (colmaj) {
+                for (size_t i = 0; i < total; ++i) {
+                    colMajorData[i] = static_cast<double>(vals[i]);
+                }
+            } else {
+                for (unsigned int j = 0; j < n; ++j) {
+                    for (unsigned int i = 0; i < m; ++i) {
+                        size_t idxM = static_cast<size_t>(j) * m + i;
+                        size_t idx = static_cast<size_t>(i) * n + j;
+                        colMajorData[idxM] = static_cast<double>(vals[idx]);
+                    }
                 }
             }
         }
+        matData = colMajorData.data();
     }
 
     std::string matPath = m_ep->nextMatPath("put_real");
@@ -839,13 +911,16 @@ int MatlabInterface::SetEngineRealMatrix(const char* name,
     MatOpenRAII matClose(matfp);
 
     size_t dims[2] = {static_cast<size_t>(m), static_cast<size_t>(n)};
+    // MAT_F_DONT_COPY_DATA: matio references matData without cloning or freeing
+    // it. Both the caller's buffer and colMajorData outlive matvar, and
+    // Mat_VarWrite finishes reading the data before this function returns.
     matvar_t* matvar = Mat_VarCreate(kTempTransferVar,
                                      MAT_C_DOUBLE,
                                      MAT_T_DOUBLE,
                                      2,
                                      dims,
-                                     colMajorData.data(),
-                                     0);
+                                     matData,
+                                     MAT_F_DONT_COPY_DATA);
     if (!matvar) {
         std::string msg = std::string("Mat_VarCreate failed for real matrix ") + name;
         ERROR_LOG(msg);
@@ -908,6 +983,9 @@ int MatlabInterface::SetEngineComplexMatrix(const char* name,
     MatOpenRAII matClose(matfp);
 
     size_t dims[2] = {static_cast<size_t>(m), static_cast<size_t>(n)};
+    // MAT v5 stores complex data as split real/imaginary arrays, so the
+    // interleaved input is staged once; matio borrows that staging instead of
+    // cloning it (split, re and im outlive matvar).
     mat_complex_split_t split = {re.data(), im.data()};
     matvar_t* matvar = Mat_VarCreate(kTempTransferVar,
                                      MAT_C_DOUBLE,
@@ -915,7 +993,7 @@ int MatlabInterface::SetEngineComplexMatrix(const char* name,
                                      2,
                                      dims,
                                      &split,
-                                     MAT_F_COMPLEX);
+                                     MAT_F_COMPLEX | MAT_F_DONT_COPY_DATA);
     if (!matvar) {
         std::string msg = std::string("Mat_VarCreate failed for complex matrix ") + name;
         ERROR_LOG(msg);
@@ -1106,19 +1184,20 @@ int MatlabInterface::GetEngineRealMatrix(const char* name,
                                          T* dest,
                                          bool colmaj) {
     assert(dest != nullptr);
-    unsigned int actualM = 0;
-    unsigned int actualN = 0;
-    std::vector<T> vec;
-    int res = GetEngineRealMatrix<T>(name, actualM, actualN, vec, colmaj);
-    if (res != 0) return res;
-    if (actualM != m || actualN != n) {
-        std::ostringstream oss;
-        oss << "GetEngineRealMatrix: expected size " << m << "x" << n << ". Got "
-            << actualM << "x" << actualN << ".";
-        ERROR_LOG(oss.str());
-        throw std::runtime_error(oss.str());
+    if (!m_ep || !m_ep->isAlive() || !name) {
+        throw std::runtime_error("Octave engine is not open or null variable name in GetEngineRealMatrix");
     }
-    std::copy(vec.begin(), vec.end(), dest);
+    DenseMatTransfer transfer(m_ep, mOutputStringBuffer, name, "get_real",
+                              "Mat_Open failed reading matrix ",
+                              "Mat_VarRead invalid dense matrix for ");
+    const unsigned int actualM = transfer.rows();
+    const unsigned int actualN = transfer.cols();
+    if (!isDecodableRealData(transfer.var(), static_cast<size_t>(actualM) * actualN)) {
+        throw std::runtime_error(std::string("Failed to decode real matrix data for ") + name);
+    }
+    // Validate before writing so a mismatched caller buffer is never touched.
+    requireExpectedSize("GetEngineRealMatrix", m, n, actualM, actualN);
+    decodeRealData(transfer.var(), actualM, actualN, colmaj, dest);
     return 0;
 }
 
@@ -1129,19 +1208,20 @@ int MatlabInterface::GetEngineComplexMatrix(const char* name,
                                             std::complex<T>* dest,
                                             bool colmaj) {
     assert(dest != nullptr);
-    unsigned int actualM = 0;
-    unsigned int actualN = 0;
-    std::vector<std::complex<T>> vec;
-    int res = GetEngineComplexMatrix<T>(name, actualM, actualN, vec, colmaj);
-    if (res != 0) return res;
-    if (actualM != m || actualN != n) {
-        std::ostringstream oss;
-        oss << "GetEngineComplexMatrix: expected size " << m << "x" << n << ". Got "
-            << actualM << "x" << actualN << ".";
-        ERROR_LOG(oss.str());
-        throw std::runtime_error(oss.str());
+    if (!m_ep || !m_ep->isAlive() || !name) {
+        throw std::runtime_error("Octave engine is not open or null variable name in GetEngineComplexMatrix");
     }
-    std::copy(vec.begin(), vec.end(), dest);
+    DenseMatTransfer transfer(m_ep, mOutputStringBuffer, name, "get_cplx",
+                              "Mat_Open failed reading complex matrix ",
+                              "Mat_VarRead invalid complex matrix for ");
+    const unsigned int actualM = transfer.rows();
+    const unsigned int actualN = transfer.cols();
+    if (!isDecodableComplexData(transfer.var(), static_cast<size_t>(actualM) * actualN)) {
+        throw std::runtime_error(std::string("Failed to decode complex matrix data for ") + name);
+    }
+    // Validate before writing so a mismatched caller buffer is never touched.
+    requireExpectedSize("GetEngineComplexMatrix", m, n, actualM, actualN);
+    decodeComplexData(transfer.var(), actualM, actualN, colmaj, dest);
     return 0;
 }
 
@@ -1157,44 +1237,19 @@ int MatlabInterface::GetEngineRealMatrix(const char* name,
     if (!m_ep || !m_ep->isAlive() || !name) {
         throw std::runtime_error("Octave engine is not open or null variable name in GetEngineRealMatrix");
     }
-
-    std::string matPath = m_ep->nextMatPath("get_real");
-    MatFileCleanupRAII cleanup(matPath);
-
-    saveOctaveVarToMatFile(m_ep, mOutputStringBuffer, name, matPath);
-
-    mat_t* matfp = Mat_Open(matPath.c_str(), MAT_ACC_RDONLY);
-    if (!matfp) {
-        throw std::runtime_error(std::string("Mat_Open failed reading matrix ") + name);
-    }
-    MatOpenRAII matClose(matfp);
-
-    matvar_t* var = Mat_VarRead(matfp, kTempTransferVar);
-    if (!var || var->rank != 2 || var->class_type == MAT_C_SPARSE) {
-        if (var) Mat_VarFree(var);
-        throw std::runtime_error(std::string("Mat_VarRead invalid dense matrix for ") + name);
-    }
-    MatVarRAII varCleanup(var);
-
-    m = static_cast<unsigned int>(var->dims[0]);
-    n = static_cast<unsigned int>(var->dims[1]);
-    const size_t total = static_cast<size_t>(m) * static_cast<size_t>(n);
-
-    std::vector<double> colMajDoubles;
-    if (!readRealDataAsDoubles(var, colMajDoubles, total)) {
-        m = 0;
-        n = 0;
+    DenseMatTransfer transfer(m_ep, mOutputStringBuffer, name, "get_real",
+                              "Mat_Open failed reading matrix ",
+                              "Mat_VarRead invalid dense matrix for ");
+    const unsigned int rows = transfer.rows();
+    const unsigned int cols = transfer.cols();
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (!isDecodableRealData(transfer.var(), total)) {
         throw std::runtime_error(std::string("Failed to decode real matrix data for ") + name);
     }
-
     dest.resize(total);
-    for (unsigned int j = 0; j < n; ++j) {
-        for (unsigned int i = 0; i < m; ++i) {
-            size_t idxM = static_cast<size_t>(j) * m + i;
-            size_t idx = colmaj ? idxM : (static_cast<size_t>(i) * n + j);
-            dest[idx] = static_cast<T>(colMajDoubles[idxM]);
-        }
-    }
+    decodeRealData(transfer.var(), rows, cols, colmaj, dest.data());
+    m = rows;
+    n = cols;
     return 0;
 }
 
@@ -1210,45 +1265,19 @@ int MatlabInterface::GetEngineComplexMatrix(const char* name,
     if (!m_ep || !m_ep->isAlive() || !name) {
         throw std::runtime_error("Octave engine is not open or null variable name in GetEngineComplexMatrix");
     }
-
-    std::string matPath = m_ep->nextMatPath("get_cplx");
-    MatFileCleanupRAII cleanup(matPath);
-
-    saveOctaveVarToMatFile(m_ep, mOutputStringBuffer, name, matPath);
-
-    mat_t* matfp = Mat_Open(matPath.c_str(), MAT_ACC_RDONLY);
-    if (!matfp) {
-        throw std::runtime_error(std::string("Mat_Open failed reading complex matrix ") + name);
-    }
-    MatOpenRAII matClose(matfp);
-
-    matvar_t* var = Mat_VarRead(matfp, kTempTransferVar);
-    if (!var || var->rank != 2 || var->class_type == MAT_C_SPARSE) {
-        if (var) Mat_VarFree(var);
-        throw std::runtime_error(std::string("Mat_VarRead invalid complex matrix for ") + name);
-    }
-    MatVarRAII varCleanup(var);
-
-    m = static_cast<unsigned int>(var->dims[0]);
-    n = static_cast<unsigned int>(var->dims[1]);
-    const size_t total = static_cast<size_t>(m) * static_cast<size_t>(n);
-
-    std::vector<std::complex<double>> colMajComplex;
-    if (!readComplexOrRealDataAsComplexDoubles(var, colMajComplex, total)) {
-        m = 0;
-        n = 0;
+    DenseMatTransfer transfer(m_ep, mOutputStringBuffer, name, "get_cplx",
+                              "Mat_Open failed reading complex matrix ",
+                              "Mat_VarRead invalid complex matrix for ");
+    const unsigned int rows = transfer.rows();
+    const unsigned int cols = transfer.cols();
+    const size_t total = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+    if (!isDecodableComplexData(transfer.var(), total)) {
         throw std::runtime_error(std::string("Failed to decode complex matrix data for ") + name);
     }
-
     dest.resize(total);
-    for (unsigned int j = 0; j < n; ++j) {
-        for (unsigned int i = 0; i < m; ++i) {
-            size_t idxM = static_cast<size_t>(j) * m + i;
-            size_t idx = colmaj ? idxM : (static_cast<size_t>(i) * n + j);
-            dest[idx] = std::complex<T>(static_cast<T>(colMajComplex[idxM].real()),
-                                        static_cast<T>(colMajComplex[idxM].imag()));
-        }
-    }
+    decodeComplexData(transfer.var(), rows, cols, colmaj, dest.data());
+    m = rows;
+    n = cols;
     return 0;
 }
 

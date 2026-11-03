@@ -24,20 +24,30 @@ void pardiso(void*, const int*, const int*, const int* type, const int* phase,
              const int* n, const void* values, const int* ia, const int* ja, int* perm,
              const int* nrhs, int* control, const int*, void* rhs, void* solution, int* error) {
     check(*type == -2 && *n == 2, "Wrong MKL matrix dimensions or type");
-    check(control[0] == 1 && control[1] == 3 && control[2] == 0 && control[27] == 0 &&
-          control[34] == 0 && control[35] == 0, "Panua-only controls leaked into MKL");
+    check(control[0] == 1 && control[1] == 3 && control[2] == 0 && control[23] == 0 &&
+          control[24] == 0 && control[27] == 0 && control[34] == 0 && control[35] == 0,
+          "Panua-only controls leaked into MKL");
     check(*nrhs >= 1 && perm != nullptr, "Invalid RHS count/permutation");
     *error = 0;
     if (*phase == -1) { ++releases; return; }
     check(ia[0] == 1 && ia[1] == 3 && ia[2] == 4 && ja[0] == 1, "CSR indexing changed");
-    if (*phase == 11 || *phase == 12 || *phase == 13) ++analyses;
+    if (*phase == 11 || *phase == 12 || *phase == 13) {
+        ++analyses;
+        // MKL only reports factor nonzeros when the slot is negative on entry.
+        check(control[17] == -1, "Factor-nonzero report was not re-enabled");
+        control[17] = 3 + analyses;
+        control[14] = 100; control[15] = 50;
+    }
     const auto* a = static_cast<const double*>(values);
     if (*phase == 12 || *phase == 13 || *phase == 22) {
         ++factors;
         if (a[0] == -123) { *error = -4; return; }
+        control[13] = factors; control[16] = 200;
+        control[21] = 1; control[22] = 1;
     }
     if (*phase == 13 || *phase == 33) {
         ++solves;
+        control[6] = solves;
         auto* b = static_cast<double*>(rhs);
         auto* x = static_cast<double*>(solution);
         const double determinant = a[0]*a[2]-a[1]*a[1];
@@ -54,19 +64,24 @@ int main() try {
     double dp[64], a[]={2,1,-1}, b[]={3,0,1,-1}, x[4];
     int ia[]={1,3,4}, ja[]={1,2,2};
     bcp_pardisoinit(pt,&type,&solver,ip,dp,&error);
-    // Legacy GIF uses all three with meanings incompatible with MKL.
-    ip[2]=64; ip[27]=1; ip[35]=1;
+    // Legacy GIF uses these with meanings incompatible with MKL.
+    ip[2]=64; ip[23]=1; ip[24]=1; ip[27]=1; ip[35]=1;
     phase=11;
     auto run=[&] { bcp_pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,
                               &nrhs,ip,&dummy,b,x,&error,dp); };
     run();
     check(!error && analyses==1, "Symbolic analysis failed");
+    check(ip[17]==4 && ip[14]==100 && ip[15]==50, "Symbolic statistics were not reported");
     phase=22; run(); run();
     check(!error && factors==2 && analyses==1, "Symbolic analysis was not reused");
+    check(ip[13]==2 && ip[16]==200 && ip[21]==1 && ip[22]==1 && ip[17]==4,
+          "Pivot/inertia/memory statistics were not reported");
     nrhs=2; phase=33; run();
     check(!error && std::abs(2*x[0]+x[1]-3)<1e-12 && std::abs(x[0]-x[1])<1e-12,
           "Multi-RHS solve translation failed");
+    check(ip[6]==1, "Refinement steps were not reported");
     phase=11; run();
+    check(ip[17]==5, "Reanalysis did not refresh factor nonzeros");
     phase=33; run();
     check(error!=0, "Reanalysis did not invalidate old factors");
     phase=22; run();
