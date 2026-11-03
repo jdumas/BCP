@@ -135,6 +135,20 @@ class PixiTaskTests(unittest.TestCase):
         self.assertEqual(command[-4:], ["--method","bcp","input path.obj","output path.obj"])
         self.assertIn("pixi-mkl-octave", calls[-1].kwargs["env"]["BCP_BIN_DIR"])
 
+    def test_compare_requires_pipeline_environment(self):
+        with self.assertRaises(SystemExit) as result:
+            self.invoke(["compare"])
+        self.assertEqual(result.exception.code, 2)
+
+    def test_compare_routes_mode_and_solver_metadata(self):
+        calls = self.invoke(["compare", "--mode", "reference", "--trace"], "octave")
+        command = calls[-1].args[0]
+        self.assertEqual(command[1:], ["scripts/compare.py", "--mode", "reference", "--trace"])
+        env = calls[-1].kwargs["env"]
+        self.assertEqual(env["BCP_LINEAR_SOLVER"], "MKL")
+        self.assertEqual(env["BCP_SCRIPT_ENGINE"], "octave")
+        self.assertIn("pixi-mkl-octave", env["BCP_BIN_DIR"])
+
 
 if __name__ == "__main__":
     unittest.main()

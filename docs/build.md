@@ -263,9 +263,55 @@ binary pipes, **not MAT files or a new Python process per iteration**.
 
 MKL PARDISO and native PT remain CPU algorithms. Keeping the original division
 of work avoids introducing a new GPU sparse solver or rewriting the optimizer.
-Binary IPC still adds overhead compared with MATLAB's in-process `gpuArray`
-operations. Numerical correctness is not a GPU speedup claim; benchmark CUDA
-on representative meshes before making performance-parity claims.
+Numerical correctness is not a licensed MATLAB/Panua runtime-speed parity claim;
+use the explicit comparison modes below to separate license-free reference checks
+from Linux/CUDA placement runs.
+
+## Explicit comparison modes (`reference` vs `parity`)
+
+Comparisons must not rely on implicit `auto` defaults (which select CPU for
+Octave GIF when `--gif-device` is omitted). `scripts/compare.py` and the Pixi
+tasks provide two named presets outside CTest's single-thread smoke limits:
+
+- **`reference` (`pixi run -e octave compare-reference`)**: runs the unchanged
+  original `.m` logic through Octave on CPU (`--device cpu --gif-device cpu --gif-backend native`)
+  with the platform sparse solver (`MKL` on Linux/Windows, `ACCELERATE` on macOS).
+  This is a license-free numerical reference, **not** an original GPU-placement
+  benchmark.
+- **`parity` (`pixi run -e octave compare-parity`)**: requires Linux x86-64,
+  working `cuda:0` for both Python/Torch prolongation and the GIF Torch energy
+  evaluator (`--device cuda:0 --gif-device gpu --gif-backend torch`), and `MKL`
+  for CPU sparse solves. Missing CUDA or a non-MKL solver fails immediately;
+  there is no automatic CPU fallback.
+- **`both` (`pixi run -e octave compare --mode both`)**: runs both modes on a
+  supplied `--input` mesh (or a deterministic curved disk fixture) and compares
+  final UVs using **only proper 2D rigid gauge alignment** ($SO(2)$ rotation +
+  translation, no rescaling and no reflection), alongside Symmetric Dirichlet
+  energy, quasi-conformal distortion, and local injectivity.
+
+All GIF stage and total timings use `CGAL::Real_timer` wall-clock semantics so
+child interpreter and GPU work are included on POSIX. Untimed diagnostic flags
+can be enabled for separate validation runs without adding copies or I/O to
+normal timed runs:
+
+- `--trace` (sets `BCP_COMPARE_TRACE_PATH`): emits per-step Newton energy,
+  gradient norm, step norm, line-search step size, foldover count, and per-remesh
+  summaries. Because end-to-end `reference` vs `parity` runs differ in both
+  preprocessing (`pred_M` float32 staging on CPU vs CUDA) and near-zero `|fbz|`
+  Hessian conditioning on Tutte initializations, end-to-end trace comparisons are
+  explicitly labeled `confounded_by_preprocessing: true` and do not claim strict
+  step-by-step trajectory parity; instead, `tests/controller_reference.m` (also
+  run by `compare.py --trace`) replays `iterationOfNewtonWithScaffold.m` on shared
+  exact inputs under a strict `rtol=1e-7, atol=1e-9` envelope.
+- `--kkt-diagnostics` (sets `BCP_COMPARE_KKT_DIR`): dumps each full KKT or
+  nonsymmetric MVC repair matrix (`matrix.mtx`), solver solutions (`batch_*.mat`
+  or `solution.mat`), and zero-based `metadata.json`, then delegates verification
+  to `scripts/check_kkt.py` for normalized backward-error
+  ($\|AX-B\|_F / (\|A\|_F \|X\|_F + \|B\|_F)$) and independent SuperLU checks.
+- `--golden-uv path/to/golden.{obj,mat}`: compares outputs against an externally
+  supplied baseline. Without golden baseline evidence from the licensed MATLAB/Panua
+  runtime on the same hardware, structured JSON reports explicitly state that
+  original MATLAB/Panua runtime parity is **not** certified.
 
 GPU execution is now validated on an NVIDIA RTX 5000 Ada Generation with
 Torch 2.15.0+cu132, CUDA runtime 13.2 and NVIDIA driver 595.91.07. Before GPU
@@ -433,7 +479,12 @@ Timeout controls cover different scopes:
   This includes startup and every solver iteration.
 - `BCP_OCTAVE_TIMEOUT_MS`: per-engine-evaluation deadline, default 600000 ms
   (10 min), maximum 86400000 ms.
-- `BCP_TORCH_TIMEOUT_SECONDS`: per-worker request/read deadline, default 600 s.
+- `BCP_TORCH_TIMEOUT_SECONDS`: legacy per-request pipe read deadline (default 600 s)
+  used only when a pipe-based worker is active; once the in-process native Torch
+  bridge replaces the worker, worker-pipe read timeouts retire and timeout
+  enforcement is governed by the outer `BCP_OCTAVE_TIMEOUT_MS` and
+  `BCP_NATIVE_TIMEOUT_SECONDS` process watchdogs (which do not promise asynchronous
+  mid-kernel cancellation inside an in-process CUDA call).
 
 For a deliberately longer run, configure both the whole-process deadline and
 any applicable per-evaluation/request deadlines; a longer inner deadline does

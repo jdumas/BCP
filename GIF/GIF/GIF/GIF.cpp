@@ -5,11 +5,17 @@
 #include "Utils/CompilationAccelerator.h"
 #include "Utils/MeshAlgorithms.h"
 #include <CGAL/Timer.h>
+#include <CGAL/Real_timer.h>
 #include <random>
 #include <numeric>
 #include <vector>
 #include <iostream>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <matio.h>
 #include <CGAL/Exact_predicates_exact_constructions_kernel.h>
 #include <CGAL/Polygon_2.h>
 #include <CGAL/intersections.h>
@@ -31,6 +37,84 @@ static std::string matlabStringLiteral(const std::string& value) {
 	}
 	return quoted + "'";
 }
+
+namespace {
+std::filesystem::path createDiagnosticPassDir(const char* kind) {
+	static int passIndex = 0;
+	const char* root = std::getenv("BCP_COMPARE_KKT_DIR");
+	if (!root || !root[0]) return {};
+	std::ostringstream name;
+	name << "pass_" << std::setw(4) << std::setfill('0') << passIndex++ << "_" << kind;
+	auto dir = std::filesystem::path(root) / name.str();
+	std::filesystem::create_directories(dir);
+	return dir;
+}
+
+void writeDiagnosticMatrixMarket(
+	const std::filesystem::path& path,
+	const Eigen::SparseMatrix<double, Eigen::RowMajor>& matrix,
+	bool expandSymmetricUpper)
+{
+	std::ofstream out(path);
+	long long nnz = 0;
+	for (int k = 0; k < matrix.outerSize(); ++k)
+		for (Eigen::SparseMatrix<double, Eigen::RowMajor>::InnerIterator it(matrix, k); it; ++it)
+			nnz += (expandSymmetricUpper && it.row() != it.col()) ? 2 : 1;
+	out << "%%MatrixMarket matrix coordinate real general\n"
+	    << matrix.rows() << ' ' << matrix.cols() << ' ' << nnz << '\n' << std::setprecision(17);
+	for (int k = 0; k < matrix.outerSize(); ++k) {
+		for (Eigen::SparseMatrix<double, Eigen::RowMajor>::InnerIterator it(matrix, k); it; ++it) {
+			out << (it.row() + 1) << ' ' << (it.col() + 1) << ' ' << it.value() << '\n';
+			if (expandSymmetricUpper && it.row() != it.col())
+				out << (it.col() + 1) << ' ' << (it.row() + 1) << ' ' << it.value() << '\n';
+		}
+	}
+	if (!out) throw std::runtime_error("Failed writing diagnostic MatrixMarket: " + path.string());
+}
+
+void writeDiagnosticMat(
+	const std::filesystem::path& path,
+	const char* name1, const GMMDenseColMatrix& m1,
+	const char* name2, size_t r2, size_t c2, const double* d2)
+{
+	std::unique_ptr<mat_t, decltype(&Mat_Close)> mat(
+		Mat_CreateVer(path.string().c_str(), nullptr, MAT_FT_MAT5), &Mat_Close);
+	auto writeVar = [&](const char* name, size_t r, size_t c, const double* d) {
+		size_t dims[2] = {r, c};
+		std::unique_ptr<matvar_t, decltype(&Mat_VarFree)> var(
+			Mat_VarCreate(name, MAT_C_DOUBLE, MAT_T_DOUBLE, 2, dims, const_cast<double*>(d), MAT_F_DONT_COPY_DATA),
+			&Mat_VarFree);
+		if (!mat || !var || Mat_VarWrite(mat.get(), var.get(), MAT_COMPRESSION_NONE) != 0)
+			throw std::runtime_error("Cannot write diagnostic MAT variable: " + path.string());
+	};
+	writeVar(name1, m1.nrows(), m1.ncols(), &m1(0, 0));
+	writeVar(name2, r2, c2, d2);
+}
+
+void writeDiagnosticMetadataJson(
+	const std::filesystem::path& dir, const char* kind, int mtype, int n, long long storedNnz,
+	int numDof, int batchSize, int batchCount, int startRow,
+	const std::vector<int>& cols, const std::vector<int>& rows)
+{
+	std::ofstream out(dir / "metadata.json");
+	auto writeVec = [&](const std::vector<int>& v) {
+		out << '[';
+		for (size_t i = 0; i < v.size(); ++i) out << (i ? ", " : "") << v[i];
+		out << ']';
+	};
+	out << "{\n  \"kind\": \"" << kind << "\",\n  \"pass_id\": \"" << dir.filename().string()
+	    << "\",\n  \"index_base\": 0,\n  \"mtype\": " << mtype
+	    << ",\n  \"rows\": " << n << ",\n  \"cols\": " << n << ",\n  \"n\": " << n
+	    << ",\n  \"stored_nnz\": " << storedNnz << ",\n  \"num_dof\": " << numDof
+	    << ",\n  \"batch_size\": " << batchSize << ",\n  \"batch_count\": " << batchCount
+	    << ",\n  \"cones_constraints_start_row\": " << startRow << ",\n  \"selected_columns\": ";
+	writeVec(cols);
+	out << ",\n  \"selected_rows\": ";
+	writeVec(rows);
+	out << "\n}\n";
+	if (!out) throw std::runtime_error("Failed writing diagnostic metadata.json");
+}
+} // namespace
 
 using K = CGAL::Exact_predicates_exact_constructions_kernel;
 using FT = K::FT;
@@ -235,12 +319,33 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 	}
 
 	//Create KKT, calculate basis, run Newton, and find all UV's
-	CGAL::Timer totalTime;
+	CGAL::Real_timer totalTime;
 	totalTime.start();
 	res = runAlgorithm(borders);
 	if (!res) {
 		cout << "Failed in algorithm" << endl;
 		return false;
+	}
+
+	const char* stopAfterBasis = std::getenv("BCP_COMPARE_STOP_AFTER_BASIS");
+	if (stopAfterBasis && std::string(stopAfterBasis) == "1") {
+		cout << "Diagnostic stop after harmonic basis requested" << endl;
+		totalTime.stop();
+		std::cout << "Total time: " << totalTime.time() << "\n";
+		mParameters_matrix(4, 0) = totalTime.time();
+		mFlipsData.clear();
+		mFlipsData.resize(9, 1);
+		mAverageEdgeLengths.clear();
+		mAverageEdgeLengths.resize(mCgalMesh.size_of_facets(), 3);
+		GMMDenseColMatrix uvs(mCgalMesh.size_of_vertices(), 2);
+		MatlabGMMDataExchange::SetEngineDenseMatrix("uvs_ordered", uvs);
+		MatlabGMMDataExchange::SetEngineDenseMatrix("IDT_outputs", mDelaunayOutputs);
+		MatlabGMMDataExchange::SetEngineDenseMatrix("parametersMatrix", mParameters_matrix);
+		MatlabGMMDataExchange::SetEngineDenseMatrix("flipsData", mFlipsData);
+		MatlabGMMDataExchange::SetEngineDenseMatrix("mAverageEdgeLengths", mAverageEdgeLengths);
+		std::string cmd_save_uv = "save(" + matlabStringLiteral(uv_mat_path) + ", 'uvs_ordered', 'IDT_outputs', 'parametersMatrix', 'mAverageEdgeLengths', 'flipsData');";
+		MatlabInterface::GetEngine().Eval(cmd_save_uv.c_str());
+		return true;
 	}
 
 	//Update UV's for halfedges in the mesh
@@ -252,7 +357,7 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 		fixOutliersInFinalResult();
 	if (mPerformFinalGlobalScaling)
 	{
-		CGAL::Timer globalScalingTime;
+		CGAL::Real_timer globalScalingTime;
 		globalScalingTime.start();
 		MatlabInterface::GetEngine().EvalToCout("global_scaling");
 		globalScalingTime.stop();
@@ -555,7 +660,7 @@ void GIF::intrinsicDelaunayTriangulationaBasedAngles(bool allow_non_planar_edge_
 	// Triangle inequality doesn't have to be satisfied
 	cout << "Applying hyperbolic Delaunay Triangulation..." << endl;
 	const double epsilon = 2e-14;
-	CGAL::Timer idtTime;
+	CGAL::Real_timer idtTime;
 	idtTime.start();
 	int bDomain = 0;
 	vector<bool> bMarked(mCgalMesh.size_of_halfedges() / 2, false);
@@ -1498,7 +1603,7 @@ bool GIF::runAlgorithm(CGAL_Borders& borders)
 	cout << "mSegSize = " << mSegSize << endl;
 	cout << "mNumInternalFaces = " << mNumInternalFaces << endl;
 
-	CGAL::Timer t1;
+	CGAL::Real_timer t1;
 	t1.start();
 
 	bool res = true;
@@ -1548,9 +1653,16 @@ bool GIF::runAlgorithm(CGAL_Borders& borders)
 
 	t1.stop();
 	cout << "Subspace construction took " << t1.time() << endl;
+	const char* stopAfterBasis = std::getenv("BCP_COMPARE_STOP_AFTER_BASIS");
+	if (stopAfterBasis && std::string(stopAfterBasis) == "1") {
+		cout << "Diagnostic stop after harmonic basis requested" << endl;
+		mUVs.clear();
+		mUVs.resize(mSizeOfMatrix, 2);
+		return true;
+	}
 
 	bool NewtonSucsess;
-	CGAL::Timer t2;
+	CGAL::Real_timer t2;
 	t2.start();
 	NewtonSucsess = runNewtonWithRemeshedScaffold(conesConstraintsStartRow, RHS);
 	t2.stop();
@@ -1729,7 +1841,7 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 	if (!res) return false;
 	res = mPardisoSolver.createPardisoFormatMatrix(mKKtEigen);
 	if (!res) return false;
-	CGAL::Timer pardiso_timer;
+	CGAL::Real_timer pardiso_timer;
 	pardiso_timer.start();
 	res = mPardisoSolver.preprocess();
 	pardiso_timer.stop();
@@ -1737,6 +1849,9 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 	pardiso_timer.reset();
 	pardiso_timer.start();
 	if (!res) return false;
+	std::filesystem::path diagDir = createDiagnosticPassDir("kkt");
+	if (!diagDir.empty())
+		writeDiagnosticMatrixMarket(diagDir / "matrix.mtx", mKKtEigen, true);
 #ifndef BCP_PARDISO_COMPAT
 	// Preserve the original selected-inversion path for Panua/legacy builds.
 	GMMCompressed1RowMatrix inverse(mKKtEigen.rows(), mKKtEigen.cols());
@@ -1746,6 +1861,14 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 			mHarmonicBasisInAllV(row, j) = inverse(row, j + conesConstraintsStartRow);
 	pardiso_timer.stop();
 	std::cout << "Selected inverse: " << pardiso_timer.time() << "\n";
+	if (!diagDir.empty()) {
+		std::vector<int> selectedCols(mNumDOF);
+		std::iota(selectedCols.begin(), selectedCols.end(), conesConstraintsStartRow);
+		writeDiagnosticMetadataJson(
+			diagDir, "kkt", mtype, mSizeOfMatrix, mKKtEigen.nonZeros(),
+			mNumDOF, mNumDOF, 0, conesConstraintsStartRow,
+			selectedCols, mNonBoundaryVerticesNearConesVerticesVec);
+	}
 #else
 	// We only need inverse columns associated with cone constraints. Solving
 	// these unit right-hand sides is equivalent to PARDISO's selected inverse,
@@ -1756,6 +1879,7 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 		(std::max(size_t(mSizeOfMatrix), size_t(1)) * sizeof(double));
 	const int batchSize = std::max(1, std::min(mNumDOF, int(std::min(size_t(16), columnsInBudget))));
 	GMMDenseColMatrix rhs, solution;
+	int batchIdx = 0;
 	for (int first = 0; first < mNumDOF; first += batchSize) {
 		const int count = std::min(batchSize, mNumDOF - first);
 		rhs.resize(mSizeOfMatrix, count);
@@ -1764,12 +1888,28 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 		for (int j = 0; j < count; ++j)
 			rhs(conesConstraintsStartRow + first + j, j) = 1.0;
 		if (!mPardisoSolver.solve(rhs, solution)) return false;
+		if (!diagDir.empty()) {
+			std::ostringstream fn;
+			fn << "batch_" << std::setw(4) << std::setfill('0') << batchIdx << ".mat";
+			std::vector<double> cols(count);
+			for (int j = 0; j < count; ++j) cols[j] = conesConstraintsStartRow + first + j;
+			writeDiagnosticMat(diagDir / fn.str(), "X", solution, "columns", count, 1, cols.data());
+		}
 		for (int row : mNonBoundaryVerticesNearConesVerticesVec)
 			for (int j = 0; j < count; ++j)
 				mHarmonicBasisInAllV(row, first + j) = solution(row, j);
+		++batchIdx;
 	}
 	pardiso_timer.stop();
 	std::cout << "Harmonic basis inverse-column solves: " << pardiso_timer.time() << "\n";
+	if (!diagDir.empty()) {
+		std::vector<int> selectedCols(mNumDOF);
+		std::iota(selectedCols.begin(), selectedCols.end(), conesConstraintsStartRow);
+		writeDiagnosticMetadataJson(
+			diagDir, "kkt", mtype, mSizeOfMatrix, mKKtEigen.nonZeros(),
+			mNumDOF, batchSize, batchIdx, conesConstraintsStartRow,
+			selectedCols, mNonBoundaryVerticesNearConesVerticesVec);
+	}
 #endif
 	for (int i = 0; i < mNumDOF; i++) {
 		int rowInKKT = i;
@@ -1860,7 +2000,7 @@ bool GIF::getTutteInitialValue(CGAL_Borders& borders)
 
 bool GIF::runNewtonWithRemeshedScaffold(int conesConstraintsStartRow, GMMDenseColMatrix& RHS)
 {
-	CGAL::Timer t1;
+	CGAL::Real_timer t1;
 	t1.start();
 	MatlabInterface::GetEngine().EvalToCout("newtonWithScaffoldPreps;");
 	double NewtonSucsess = true;
@@ -2043,7 +2183,7 @@ void GIF::getResult()
 		checkForFoldovers(flippedTriangles);
 		if (flippedTriangles.size() < mMaxFoldoversForIsoTLC) // If more than 20 flips remained, it's better to skip the isoTLC fix and apply the MVC fix
 		{
-			CGAL::Timer fixingTime1;
+			CGAL::Real_timer fixingTime1;
 			fixingTime1.start();
 			fixCotFoldoversWithIsoTLC(flippedTriangles);
 			checkForFoldovers(flippedTriangles);
@@ -2283,7 +2423,7 @@ void GIF::fixCotFoldoversWithIsoTLC(std::vector<Facet_handle> flippedTriangles)
 
 void GIF::fixCotFoldoversWithMeanValue(std::vector<Facet_handle> flippedTriangles)
 {
-	CGAL::Timer fixingTime1;
+	CGAL::Real_timer fixingTime1;
 	fixingTime1.start();
 	GMMDenseColMatrix UVonCones1(mNumScaffoldDOF, 2);
 	MatlabGMMDataExchange::GetEngineDenseMatrix("GIF.UVonCones1", UVonCones1);
@@ -2479,6 +2619,14 @@ void GIF::fixCotFoldoversWithMeanValue(std::vector<Facet_handle> flippedTriangle
 	res = pardisoSolver.createPardisoFormatMatrix(laplacian1);
 	res = pardisoSolver.preprocess();
 	pardisoSolver.solve(rhs_elimination, solution);
+	if (auto diagDir = createDiagnosticPassDir("mvc"); !diagDir.empty()) {
+		writeDiagnosticMatrixMarket(diagDir / "matrix.mtx", laplacian1, false);
+		writeDiagnosticMat(diagDir / "solution.mat", "B", rhs_elimination, "X",
+			solution.nrows(), solution.ncols(), &solution(0, 0));
+		writeDiagnosticMetadataJson(
+			diagDir, "mvc", mtype, gluedMeshInternalVerticesCount, laplacian1.nonZeros(),
+			static_cast<int>(rhs_elimination.ncols()), static_cast<int>(rhs_elimination.ncols()), 1, 0, {}, {});
+	}
 	mParameters_matrix(4, 0) = mParameters_matrix(4, 0) + fixingTime1.time();
 	num1 = 0;
 	for_each_vertex(vi, gluedMesh)
@@ -2684,7 +2832,7 @@ void GIF::fixOutliersInFinalResult()
 {
 	/*GMMDenseColMatrix e_sd_values(mCgalMesh.size_of_facets(), 1);
 	GMMDenseColMatrix areas(mCgalMesh.size_of_facets(), 1);*/
-	CGAL::Timer t1;
+	CGAL::Real_timer t1;
 	t1.start();
 	vector<double> e_sd_area_per_face;
 	e_sd_area_per_face.reserve((mCgalMesh.size_of_facets()) + 10);

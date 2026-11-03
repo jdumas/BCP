@@ -56,7 +56,7 @@ def runtime_environment(build, engine, octave=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("configure", "build", "test", "parameterize"))
+    parser.add_argument("command", choices=("configure", "build", "test", "parameterize", "compare"))
     parser.add_argument("--engine", choices=("native", "matlab", "octave"),
                         default={"matlab": "matlab", "octave": "octave", "octave-source": "octave"}.get(os.environ.get("PIXI_ENVIRONMENT_NAME"), "native"))
     parser.add_argument("--solver", choices=("ACCELERATE", "MKL", "EIGEN", "PANUA"),
@@ -65,12 +65,12 @@ def main():
     parser.add_argument("--gpu", action="store_true", help="Require both CUDA tensors and the GIF GPU evaluator")
     parser.add_argument("--gif-backend", choices=("auto", "native", "torch"))
     args, extra = parser.parse_known_args()
-    if extra and args.command != "parameterize":
+    if extra and args.command not in ("parameterize", "compare"):
         parser.error(f"Unexpected arguments: {extra}")
     if args.gpu and args.command != "test":
-        parser.error("--gpu is a test mode; parameterize accepts --device and --gif-device")
-    if (args.full or args.gpu) and args.engine == "native":
-        parser.error("--full/--gpu requires a MATLAB or Octave pipeline environment")
+        parser.error("--gpu is a test mode; parameterize/compare accept --device/--gif-device or --mode")
+    if (args.full or args.gpu or args.command == "compare") and args.engine == "native":
+        parser.error("--full/--gpu/compare requires a MATLAB or Octave pipeline environment")
     source_octave = args.engine == "octave" and os.environ.get("PIXI_ENVIRONMENT_NAME") == "octave-source"
     suffix = "-source" if source_octave else ""
     build = ROOT / "build" / f"pixi-{args.solver.lower()}-{args.engine}{suffix}"
@@ -97,7 +97,7 @@ def main():
                 parser.error("Octave is missing. Use the Pixi octave environment; no runtime test will be silently skipped.")
             octave_executable = str(Path(octave_executable).resolve())
         env["BCP_OCTAVE_EXECUTABLE"] = octave_executable
-    if args.command in ("configure", "build", "test", "parameterize"):
+    if args.command in ("configure", "build", "test", "parameterize", "compare"):
         command = [
             "cmake", "-S", ROOT, "-B", build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
@@ -130,6 +130,10 @@ def main():
             env["BCP_TORCH_REFERENCE_DEVICE"] = "cuda:0"
             print(f"Required devices: PyTorch=cuda:0, GIF={env['BCP_GIF_DEVICE']}", flush=True)
         run(["ctest", "--test-dir", build, "-C", "Release", "--output-on-failure", "--no-tests=error"], env)
+    elif args.command == "compare":
+        env["BCP_LINEAR_SOLVER"] = args.solver
+        env["BCP_SCRIPT_ENGINE"] = args.engine
+        run([sys.executable, "scripts/compare.py", *extra], env)
     else:
         if args.engine != "native":
             extra = ["--method", "bcp", *extra]

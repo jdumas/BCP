@@ -48,6 +48,9 @@ build = "python scripts/pixi_tasks.py build"
 test = "python scripts/pixi_tasks.py test"
 test-gpu = "python scripts/pixi_tasks.py test --gpu"
 parameterize = "python scripts/pixi_tasks.py parameterize"
+compare = "python scripts/pixi_tasks.py compare"
+compare-reference = "python scripts/pixi_tasks.py compare --mode reference"
+compare-parity = "python scripts/pixi_tasks.py compare --mode parity"
 
 # Preserve the original direct, in-memory MATLAB engine for the full-performance
 # path. MATLAB itself is a separately licensed installation, not a Conda package.

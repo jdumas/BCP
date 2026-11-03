@@ -82,9 +82,19 @@ if(BCP_BUILD_TESTS)
                 --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/torch_energy_reference.m")
             set_tests_properties(torch_energy_reference PROPERTIES
                 ENVIRONMENT "BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}" TIMEOUT 180)
+            add_test(NAME controller_reference COMMAND "${BCP_OCTAVE_EXECUTABLE}"
+                --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/controller_reference.m")
+            set_tests_properties(controller_reference PROPERTIES
+                ENVIRONMENT "BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}" TIMEOUT 180)
             add_test(NAME full_pipeline_torch_cpu COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/full_pipeline.py")
             set_tests_properties(full_pipeline_torch_cpu PROPERTIES
                 ENVIRONMENT "BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE};BCP_DEVICE=cpu;BCP_GIF_DEVICE=cpu;BCP_GIF_BACKEND=torch" TIMEOUT 1250)
+            add_test(NAME compare_reference_diagnostics COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/scripts/compare.py" --mode reference --grid-size 10 --target-faces 60
+                --trace --kkt-diagnostics)
+            set_tests_properties(compare_reference_diagnostics PROPERTIES
+                ENVIRONMENT "BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE};BCP_OCTAVE_EXECUTABLE=${BCP_OCTAVE_EXECUTABLE};BCP_LINEAR_SOLVER=${BCP_LINEAR_SOLVER}"
+                TIMEOUT 600)
         endif()
     endif()
     add_executable(bcp_mkl_contract_test tests/mkl_contract.cpp portable/pardiso_mkl.cpp)

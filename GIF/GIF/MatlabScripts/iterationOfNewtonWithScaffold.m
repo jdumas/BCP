@@ -136,6 +136,11 @@ for i=1:100
     x_initial=x_initial+t*d;
     iter=iter+1;
 
+    if ~isempty(getenv('BCP_COMPARE_TRACE_PATH'))
+        fprintf(1, 'BCP_TRACE_STEP remesh=%d step=%d iter=%d E=%.17g Eprev=%.17g normG=%.17g normG1=%.17g normD=%.17g t=%.17g tMax=%.17g stepNorm=%.17g foldovers=%d\n', ...
+            timesRemeshed, i, iter, E, Eprev, norm(G), norm(G1), norm(d), t, tMax, t * norm(d), numel(foldoversIndices));
+    end
+
     temp_arr1 = x_initial(numDOF1:(numDOFScaffold-1));
     temp_arr2 = x_initial((almostAllVars+1):totVars);
     radius_squared = x_initial(1, 1) * x_initial(1, 1) + x_initial(numDOFScaffold, 1) * x_initial(numDOFScaffold, 1);
@@ -163,6 +168,10 @@ arr1=[E];
 GIF.newtonIters=iter;
 GIF.NewtonFinalEnergy=E;
 rate = abs(GIF.initTotalEnergy - E) / GIF.initTotalEnergy;
+if ~isempty(getenv('BCP_COMPARE_TRACE_PATH'))
+    fprintf(1, 'BCP_TRACE_REMESH remesh=%d newtonIters=%d initE=%.17g finalE=%.17g rate=%.17g\n', ...
+        timesRemeshed, iter, GIF.initTotalEnergy, E, rate);
+end
 
 meanU = mean(x_initial(numDOF1:(numDOFScaffold-1)));
 meanV = mean(x_initial((almostAllVars+1):totVars));

@@ -41,6 +41,10 @@ pixi run -e octave-source test
 pixi run -e matlab parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
 # Optional Torch evaluator under Octave (working CUDA required):
 pixi run -e octave parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
+# License-free CPU numerical reference vs strict Linux/CUDA parity comparison:
+pixi run -e octave compare-reference
+pixi run -e octave compare-parity
+pixi run -e octave compare --mode both --trace --kkt-diagnostics --output-json outputs/compare.json
 ```
 
 See **[docs/build.md](docs/build.md)** for platform targets, runtime requirements,
