@@ -22,6 +22,9 @@
 #include <CGAL/enum.h>
 #include <Isometric_Injective_Energies/apps/IsoTLC_2D.cpp>
 #include <igl/boundary_loop.h>
+#ifdef BCP_CONTROLLED_VALIDATION
+#include "ControlledValidation.h"
+#endif
 
 
 using namespace Eigen;
@@ -233,6 +236,37 @@ bool area_centroid(const Polygon& poly, Point2& C) {
 	return true;
 }
 
+#ifdef BCP_CONTROLLED_VALIDATION
+namespace {
+// Vertex UVs by CGAL vertex index (rows) as a C-ordered (numVertices, 2) array.
+void cvWriteVertexUVs(const std::string& name, const std::string& stage, Mesh& mesh) {
+	std::vector<double> uv(2 * mesh.size_of_vertices());
+	for (size_t i = 0; i < mesh.size_of_vertices(); ++i) {
+		const Complex c = mesh.vertex(i)->uvC();
+		uv[2 * i] = c.real();
+		uv[2 * i + 1] = c.imag();
+	}
+	bcp::cv::writeF64(name, stage, "vertex", mesh.size_of_vertices(), 2, uv.data(), false);
+}
+void cvReadVertexUVs(const std::string& name, Mesh& mesh) {
+	const std::vector<double> uv = bcp::cv::readF64(name, mesh.size_of_vertices(), 2, false);
+	for (size_t i = 0; i < mesh.size_of_vertices(); ++i) mesh.vertex(i)->uvC(Complex(uv[2 * i], uv[2 * i + 1]));
+}
+void cvWriteFaces(const std::string& name, const std::string& stage, const std::vector<Facet_handle>& faces) {
+	std::vector<int32_t> ids;
+	for (const Facet_handle& f : faces) ids.push_back(f->index());
+	bcp::cv::writeI32(name, stage, "face", ids.size(), 1, ids.data());
+}
+void cvWriteDense(const std::string& name, const std::string& stage, const std::string& space, GMMDenseColMatrix& m) {
+	bcp::cv::writeF64(name, stage, space, m.nrows(), m.ncols(), m.nrows() * m.ncols() ? &m(0, 0) : nullptr, true);
+}
+void cvReadDense(const std::string& name, GMMDenseColMatrix& m) {
+	const std::vector<double> v = bcp::cv::readF64(name, m.nrows(), m.ncols(), true);
+	if (!v.empty()) std::copy(v.begin(), v.end(), &m(0, 0));
+}
+}
+#endif
+
 double extract_symmetric_dirichlet_energy(Facet_const_handle& face)
 {
 	// Assuming the triangle is not degenerate
@@ -263,6 +297,9 @@ GIF::GIF() {
 }
 bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool allow_MVC_fix, bool allow_local_fix, std::string edge_lengths_mat_path, int interior_faces, int boundary_segment_size, double curvature_meta_vertices_rate, double outer_termination_condition_rate, double energy_related_termination_condition)
 {
+#ifdef BCP_CONTROLLED_VALIDATION
+	bcp::cv::init();
+#endif
 	std::string cmd = "clear;";
 	MatlabInterface::GetEngine().EvalToCout(cmd.c_str());
 	// Pass the policy explicitly: a Windows MATLAB COM server may predate this
@@ -301,6 +338,10 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 		cout << "Failed to load mesh" << endl;
 		return false;
 	}
+#ifdef BCP_CONTROLLED_VALIDATION
+	bcp::cv::setMeta("mesh_vertices", mCgalMesh.size_of_vertices());
+	bcp::cv::setMeta("mesh_faces", mCgalMesh.size_of_facets());
+#endif
 	//Get borders of mesh
 	CGAL_Borders borders(mCgalMesh);
 	if (borders.genus() != 0) {
@@ -348,13 +389,49 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 		return true;
 	}
 
+#ifdef BCP_CONTROLLED_VALIDATION
+	{
+		// Exact repair-stage inputs: system UVs and the scaffold cone UVs read by the MVC fix.
+		GMMDenseColMatrix cones(mNumScaffoldDOF, 2);
+		MatlabGMMDataExchange::GetEngineDenseMatrix("GIF.UVonCones1", cones);
+		if (bcp::cv::replayStage() == bcp::cv::ReplayStage::PreRepair) {
+			cvReadDense("state_pre_repair_mUVs", mUVs);
+			cvReadDense("state_pre_repair_UVonCones1", cones);
+			MatlabGMMDataExchange::SetEngineDenseMatrix("bcp_controlled_cones", cones);
+			MatlabInterface::GetEngine().Eval("GIF.UVonCones1 = bcp_controlled_cones; clear bcp_controlled_cones;");
+			bcp::cv::event("replayed pre-repair state (mUVs, GIF.UVonCones1)");
+		}
+		bcp::cv::setMeta("num_dof", mNumDOF);
+		bcp::cv::setMeta("num_scaffold_dof", mNumScaffoldDOF);
+		cvWriteDense("state_pre_repair_mUVs", "pre-repair", "system_row", mUVs);
+		cvWriteDense("state_pre_repair_UVonCones1", "pre-repair", "scaffold_dof", cones);
+	}
+#endif
 	//Update UV's for halfedges in the mesh
 	updatHalfedgeUVs();
+#ifdef BCP_CONTROLLED_VALIDATION
+	cvWriteVertexUVs("uv_pre_repair", "pre-repair", mCgalMesh);
+#endif
 
 	//Decide if failed, succeeded or partially succeeded
 	getResult();
+#ifdef BCP_CONTROLLED_VALIDATION
+	if (bcp::cv::replayStage() == bcp::cv::ReplayStage::PostMvc) {
+		cvReadVertexUVs("uv_post_getresult", mCgalMesh);
+		bcp::cv::event("replayed post-getResult vertex UVs before fixOutliersInFinalResult");
+	}
+	cvWriteVertexUVs("uv_post_getresult", "post-mvc", mCgalMesh);
+	{
+		std::vector<Facet_handle> flips;
+		checkForFoldovers(flips);
+		cvWriteFaces("flips_post_getresult", "post-mvc", flips);
+	}
+#endif
 	if (!mRunIDT)
 		fixOutliersInFinalResult();
+#ifdef BCP_CONTROLLED_VALIDATION
+	cvWriteVertexUVs("uv_after_outlier", "outlier", mCgalMesh);
+#endif
 	if (mPerformFinalGlobalScaling)
 	{
 		CGAL::Real_timer globalScalingTime;
@@ -371,6 +448,9 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 	
 	std::cout << "Total time: " << totalTime.time() << "\n";
 	mParameters_matrix(4, 0) = totalTime.time();
+#ifdef BCP_CONTROLLED_VALIDATION
+	cvWriteVertexUVs("uv_final", "final", mCgalMesh);
+#endif
 
 	GMMDenseColMatrix uvs(mCgalMesh.size_of_vertices(), 2);
 	for_each_vertex(vi, mCgalMesh)
@@ -1441,6 +1521,9 @@ bool GIF::TransferBorderFacesAndVerticesToMatlab()
 	{
 		mNearBoundaryVerticesVec.push_back((*itr1));
 	}
+#ifdef BCP_CONTROLLED_VALIDATION
+	bcp::cv::canonicalize(mNearBoundaryVerticesVec);
+#endif
 
 	int numNearConesFaces = facesNearCones.size();
 	GMMDenseColMatrix facesByHalfedges(numNearConesFaces, 3);
@@ -1451,8 +1534,15 @@ bool GIF::TransferBorderFacesAndVerticesToMatlab()
 	mConesAndNearConesMapOfRowsInKKT.clear();
 	mNearConesVertices.clear();
 	i = 0;
+#ifdef BCP_CONTROLLED_VALIDATION
+	// Same face set and sampler; only the energy row order is canonicalized.
+	const std::vector<Facet_handle> energyFaces = bcp::cv::ordered<Facet_handle>(facesNearCones);
+	cvWriteFaces("energy_face_rows", "energy-rows", energyFaces);
+	for (const Facet_handle& f : energyFaces) {
+#else
 	for (itr = facesNearCones.begin(); itr != facesNearCones.end(); ++itr) {
 		Facet_handle f = (*itr);
+#endif
 		Halfedge_handle he[3];
 		f->getHalfedges(he);
 		facesByHalfedges(i, 0) = mIndexOfHEinSystem[he[0]->index()] + 1;//+1 for matlab
@@ -1486,6 +1576,11 @@ bool GIF::TransferBorderFacesAndVerticesToMatlab()
 		else
 			mNonMetaBoundaryVerticesNearConesVerticesVec.push_back((*itr1));
 	}
+#ifdef BCP_CONTROLLED_VALIDATION
+	bcp::cv::canonicalize(mNearConesVerticesVec);
+	bcp::cv::canonicalize(mNonBoundaryVerticesNearConesVerticesVec);
+	bcp::cv::canonicalize(mNonMetaBoundaryVerticesNearConesVerticesVec);
+#endif
 	mMetaIndicesVec.clear();
 	mIsNearMeta.clear();
 	mIsNearMeta.resize(mCgalMesh.size_of_vertices(), false);
@@ -1522,6 +1617,13 @@ bool GIF::TransferBorderFacesAndVerticesToMatlab()
 
 	MatlabGMMDataExchange::SetEngineDenseMatrix("GIF.F", facesByHalfedges);
 	MatlabGMMDataExchange::SetEngineDenseMatrix("GIF.internalFacesIndicator", internalFacesIndicator);
+#ifdef BCP_CONTROLLED_VALIDATION
+	cvWriteDense("energy_face_system_rows", "energy-rows", "system_row_1based", facesByHalfedges);
+	cvWriteDense("energy_internal_indicator", "energy-rows", "energy_row", internalFacesIndicator);
+	bcp::cv::setMeta("energy_faces", numNearConesFaces);
+	bcp::cv::setMeta("energy_cone_faces", facesNearCones1.size());
+	bcp::cv::setMeta("size_of_system_var", mSizeOfSystemVar);
+#endif
 	GMMDenseColMatrix borderEdges(mBoundaryVerticesMap.size(), 3);
 	for (int i = 0; i < mBoundaryVerticesMap.size(); i++) {
 		Vertex_handle v = mBoundaryVerticesMap[i];
@@ -1575,8 +1677,21 @@ bool GIF::TransferScaffoldBorderFacesAndVerticesToMatlab(Mesh& mesh1)
 
 	unordered_set<Facet_handle>::const_iterator itr;
 	int i = 0;
+#ifdef BCP_CONTROLLED_VALIDATION
+	static int scaffoldPass = 0;
+	const std::vector<Facet_handle> scaffoldFaces = bcp::cv::ordered<Facet_handle>(facesNearCones);
+	{
+		std::ostringstream name;
+		name << "scaffold_face_rows_" << std::setw(3) << std::setfill('0') << scaffoldPass++;
+		std::vector<int32_t> ids;
+		for (const Facet_handle& f : scaffoldFaces) ids.push_back(f->index());
+		bcp::cv::writeI32(name.str(), "scaffold-energy-rows", "scaffold_face", ids.size(), 1, ids.data());
+	}
+	for (const Facet_handle& f : scaffoldFaces) {
+#else
 	for (itr = facesNearCones.begin(); itr != facesNearCones.end(); ++itr) {
 		Facet_handle f = (*itr);
+#endif
 		Halfedge_handle he[3];
 		f->getHalfedges(he);
 		facesByHalfedges(i, 0) = mIndexOfHEinScaffoldSystem[he[0]->index()] + 1;//+1 for matlab
@@ -1910,6 +2025,41 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 			selectedCols, mNonBoundaryVerticesNearConesVerticesVec);
 	}
 #endif
+#ifdef BCP_CONTROLLED_VALIDATION
+	{
+		// Rows written from the factorization (sorted system-row ids) and their values.
+		std::vector<int> rows = mNonBoundaryVerticesNearConesVerticesVec;
+		std::sort(rows.begin(), rows.end());
+		const size_t n = rows.size(), d = size_t(mNumDOF);
+		const int32_t meta[4] = {mNumDOF, mSizeOfMatrix, mSizeOfSystemVar, conesConstraintsStartRow};
+		if (bcp::cv::replayStage() == bcp::cv::ReplayStage::Basis) {
+			const std::vector<int32_t> m = bcp::cv::readI32("basis_meta", 1, 4);
+			if (!std::equal(m.begin(), m.end(), meta))
+				throw std::runtime_error("basis replay: nDOF/system dimensions/cone start row differ from capture");
+			const std::vector<int32_t> r = bcp::cv::readI32("basis_rows", n, 1);
+			if (!std::equal(r.begin(), r.end(), rows.begin()))
+				throw std::runtime_error("basis replay: used row ids differ from capture");
+			const std::vector<double> re = bcp::cv::readF64("basis_values_real", n, d, false);
+			const std::vector<double> im = bcp::cv::readF64("basis_values_imag", n, d, false);
+			for (size_t k = 0; k < n; ++k)
+				for (size_t j = 0; j < d; ++j)
+					mHarmonicBasisInAllV(rows[k], j) = Complex(re[k * d + j], im[k * d + j]);
+			bcp::cv::event("replayed harmonic basis used rows after factorization");
+		}
+		std::vector<int32_t> rows32(rows.begin(), rows.end());
+		std::vector<double> re(n * d), im(n * d);
+		for (size_t k = 0; k < n; ++k)
+			for (size_t j = 0; j < d; ++j) {
+				const Complex v = mHarmonicBasisInAllV(rows[k], j);
+				re[k * d + j] = v.real();
+				im[k * d + j] = v.imag();
+			}
+		bcp::cv::writeI32("basis_meta", "basis", "nDOF,sizeOfMatrix,sizeOfSystemVar,conesStartRow", 1, 4, meta);
+		bcp::cv::writeI32("basis_rows", "basis", "system_row", n, 1, rows32.data());
+		bcp::cv::writeF64("basis_values_real", "basis", "basis_row,dof", n, d, re.data(), false);
+		bcp::cv::writeF64("basis_values_imag", "basis", "basis_row,dof", n, d, im.data(), false);
+	}
+#endif
 	for (int i = 0; i < mNumDOF; i++) {
 		int rowInKKT = i;
 		int indexOfConeInSystem = mIndexOfHEinSystem[mConesAndMetaMap[i]->halfedge()->index()];
@@ -2145,6 +2295,9 @@ void GIF::getResult()
 	int numFoldovers, numFoldsNearCones, numFoldsNearBorder, numWrongAngles, numWrongConeAngles;
 	std::vector<Facet_handle> flippedTriangles;
 	checkForFoldovers(flippedTriangles);
+#ifdef BCP_CONTROLLED_VALIDATION
+	cvWriteFaces("flips_pre_repair", "pre-repair", flippedTriangles);
+#endif
 	mFlipsData.clear();
 	mFlipsData.resize(9, 1);
 	mFlipsData(0, 0) = flippedTriangles.size();
@@ -2170,12 +2323,20 @@ void GIF::getResult()
 		cout << "Applying the foldovers fixing method to fix " << flippedTriangles.size() << " foldovers..." << endl;
 		fixCotFoldoversWithKernelPositioning(flippedTriangles, false);
 		checkForFoldovers(flippedTriangles);
+#ifdef BCP_CONTROLLED_VALIDATION
+		cvWriteVertexUVs("uv_after_kp1", "kp1", mCgalMesh);
+		cvWriteFaces("flips_after_kp1", "kp1", flippedTriangles);
+#endif
 		mFlipsData(1, 0) = flippedTriangles.size();
 		mFlipsData(5, 0) = 1;
 		if (flippedTriangles.size() > 0)
 		{
 			fixCotFoldoversWithKernelPositioning(flippedTriangles, true);
 			checkForFoldovers(flippedTriangles);
+#ifdef BCP_CONTROLLED_VALIDATION
+			cvWriteVertexUVs("uv_after_kp2", "kp2", mCgalMesh);
+			cvWriteFaces("flips_after_kp2", "kp2", flippedTriangles);
+#endif
 			mFlipsData(2, 0) = flippedTriangles.size();
 			mFlipsData(6, 0) = 1;
 		}
@@ -2186,6 +2347,10 @@ void GIF::getResult()
 			fixingTime1.start();
 			fixCotFoldoversWithIsoTLC(flippedTriangles);
 			checkForFoldovers(flippedTriangles);
+#ifdef BCP_CONTROLLED_VALIDATION
+			cvWriteVertexUVs("uv_after_isotlc", "isotlc", mCgalMesh);
+			cvWriteFaces("flips_after_isotlc", "isotlc", flippedTriangles);
+#endif
 			mFlipsData(3, 0) = flippedTriangles.size();
 			mFlipsData(7, 0) = 1;
 			fixingTime1.stop();
@@ -2205,6 +2370,10 @@ void GIF::getResult()
 		cout << "Applying the foldovers fixing method to fix " << flippedTriangles.size() << " foldovers..." << endl;
 		fixCotFoldoversWithMeanValue(flippedTriangles);
 		checkForFoldovers(flippedTriangles);
+#ifdef BCP_CONTROLLED_VALIDATION
+		cvWriteVertexUVs("uv_after_mvc", "mvc", mCgalMesh);
+		cvWriteFaces("flips_after_mvc", "mvc", flippedTriangles);
+#endif
 		mFlipsData(4, 0) = flippedTriangles.size();
 		mFlipsData(8, 0) = 1;
 		if (flippedTriangles.size() == 0)
@@ -2726,6 +2895,44 @@ void GIF::adjustPatch(unordered_set<Facet_const_handle>& facesEnvironment, GMMDe
 	patchF.clear();
 	patchF.resize(facesEnvironment.size(), 3);
 	unordered_set<Facet_const_handle>::const_iterator itr;
+#ifdef BCP_CONTROLLED_VALIDATION
+	if (bcp::cv::order() == bcp::cv::Order::Index) {
+		// Same patch sets; faces and vertices enumerated by mesh index instead of pointer hash.
+		const std::vector<Facet_const_handle> faces = bcp::cv::ordered<Facet_const_handle>(facesEnvironment);
+		for (const Facet_const_handle& f : faces) {
+			Halfedge_around_facet_const_circulator h = f->facet_begin();
+			const Halfedge_around_facet_const_circulator hEnd = h;
+			CGAL_For_all(h, hEnd)
+				verticesEnvironment.insert(h->vertex());
+		}
+		const std::vector<Vertex_const_handle> vertices = bcp::cv::ordered<Vertex_const_handle>(verticesEnvironment);
+		patchV.clear();
+		patchV.resize(vertices.size(), 3);
+		patchUVs.clear();
+		patchUVs.resize(vertices.size(), 2);
+		for (int k = 0; k < (int)vertices.size(); ++k) {
+			const Vertex_const_handle& v = vertices[k];
+			original_mesh_to_patch[v->index()] = k;
+			patch_to_original_mesh[k] = v->index();
+			patchV(k, 0) = v->point().x();
+			patchV(k, 1) = v->point().y();
+			patchV(k, 2) = v->point().z();
+			patchUVs(k, 0) = v->uvC().real();
+			patchUVs(k, 1) = v->uvC().imag();
+		}
+		for (int k = 0; k < (int)faces.size(); ++k) {
+			Halfedge_around_facet_const_circulator h = faces[k]->facet_begin();
+			const Halfedge_around_facet_const_circulator hEnd = h;
+			int v_ind = 0;
+			CGAL_For_all(h, hEnd)
+			{
+				patchF(k, v_ind) = original_mesh_to_patch[h->vertex()->index()];
+				v_ind++;
+			}
+		}
+		return;
+	}
+#endif
 	int i = 0;
 	for (itr = facesEnvironment.begin(); itr != facesEnvironment.end(); ++itr) {
 		i++;
@@ -2858,6 +3065,18 @@ void GIF::fixOutliersInFinalResult()
 		[&e_sd_area_per_face](size_t i1, size_t i2) { return e_sd_area_per_face[i1] > e_sd_area_per_face[i2]; });
 
 	const int FACES_COUNT_TO_FIX = 0.0001 * mCgalMesh.size_of_facets();
+#ifdef BCP_CONTROLLED_VALIDATION
+	{
+		std::vector<int32_t> faces;
+		std::vector<double> values;
+		for (int i = 0; i < FACES_COUNT_TO_FIX; i++) {
+			faces.push_back(static_cast<int32_t>(indices[i]));
+			values.push_back(e_sd_area_per_face[indices[i]]);
+		}
+		bcp::cv::writeI32("outlier_ranking_faces", "outlier", "face", faces.size(), 1, faces.data());
+		bcp::cv::writeF64("outlier_ranking_values", "outlier", "face_esd_times_area", values.size(), 1, values.data(), false);
+	}
+#endif
 
 	for (int i = 0; i < FACES_COUNT_TO_FIX; i++)
 	{

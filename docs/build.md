@@ -390,6 +390,90 @@ script errors now propagate through the existing output buffer rather than
 retrying with a reset/stale workspace; no extra per-command IPC roundtrip was
 added for that check.
 
+## Controlled numerical validation (opt-in, not a benchmark)
+
+```sh
+pixi run -e octave controlled-compare --input mesh.obj --work-dir build/controlled-mesh
+# Reuse only verified completed stages, with the same arguments:
+pixi run -e octave controlled-compare --input mesh.obj --work-dir build/controlled-mesh --resume
+```
+
+This builds the separate `GIF_controlled` target with
+`BCP_BUILD_CONTROLLED_VALIDATION=ON`. Normal Pixi build/test/compare tasks
+explicitly set the option **OFF**; the production `GIF` target never compiles
+these hooks. No production ordering, equations, precision, stopping rules or
+iteration limits are changed. This mode is currently POSIX/Octave-only.
+
+The validation target uses canonical mesh-index ordering of energy rows and
+IsoTLC patch faces/vertices (`--order original` retains the historical ordering).
+It captures selected harmonic-basis rows, controller states and native repair
+stages, and checks exact basis/pre-repair/post-MVC replay. Each original `.m`
+controller state is then replayed with native and in-process Torch evaluators
+on identical arrays. Per-step records include E/G/H, coordinates, Cholesky
+fallbacks, directions, line-search steps and stop reasons. The report identifies
+both the first arithmetic difference and the first unchanged-envelope failure.
+Stable ordering removes arbitrary heap-order variation; it does not cure
+ill-conditioning or promise identical CPU/GPU arithmetic.
+
+Kernel isolation additionally holds complex products/magnitudes fixed in
+**diagnostic copies** of the evaluator. It distinguishes upstream roundoff and
+exact-zero branches from formula differences without modifying production
+math or weakening the primary gates. `--no-kernel-isolation` disables this
+additional diagnostic. A diagnostic execution failure returns an execution
+error while retaining the independent primary results.
+
+Outputs are in `<work-dir>/report.json`, with immutable copied inputs,
+SHA256/source/runtime provenance, per-remesh MAT snapshots, native `.npy` stage
+arrays and logs. A completed stage is resumed only if its configuration and all
+recorded files still match. Changed source/runtime/thread settings are rejected;
+incomplete evidence is retained, not overwritten. Small frozen Torch analyses
+are recomputed on resume, while completed native/controller executions are
+reused. Use a fresh directory after changing the numerical source.
+
+An existing capture can be supplied with `--frozen-input-dir DIR`; it must have
+`frozen-source.obj` and `frozen-edge-lengths.mat`, and may include `coarse.npz`,
+`coarse-uv.mat` and `capture.json`. Without `--target-faces`, fresh input meshes
+retain the original simplification policy. `--device cpu` explicitly selects
+Torch CPU; the default is required `cuda:0`, never a silent fallback.
+
+Every result is labelled `controlled_validation_with_diagnostic_io`. Timings
+include heavy snapshot I/O and **must not be treated as performance numbers**.
+The existing kernel (`2e-9` scaled), trajectory (`1e-7`/`1e-9`) and rigid-UV/
+energy comparisons are retained. Historical golden checks are not replaced or
+relabelled as passing. Exit 0 means the requested controlled checks pass,
+1 means numerical/reproducibility checks failed, and 2 means execution or a
+requested diagnostic failed. A limited `--max-remeshes` reports its coverage.
+
+When enabled, two extra CTest checks exercise native capture/replay I/O and a
+small end-to-end controlled capture/replay/resume. They do not assert that every
+CPU/GPU trajectory must match on an ill-conditioned problem.
+
+### Isolated MKL basis-solve probe
+
+For an existing independently checked KKT dump, the Linux probe can compare
+full solves, documented partial-solve modes and batch sizes without modifying
+any production control:
+
+```sh
+MKL_NUM_THREADS=2 OMP_NUM_THREADS=24 MKL_THREADING_LAYER=GNU MKL_INTERFACE_LAYER=LP64 \
+pixi run -e octave python scripts/benchmark_basis.py --dump build/kkt-dump \
+    --mode full --batch-size 16 --rounds 3 --output build/basis-probe.json
+```
+
+Use a directory containing exactly one KKT pass. Omitting `--dump` runs a tiny
+contract fixture. Modes `sparse-selected`, `sparse-rhs` and `selected` are
+experimental vendor API probes, not production backend selections. They are
+accepted only when requested entries match the validated full-column reference
+and the same factors can still perform the later full back-substitution. A tiny
+fixture passing is not evidence that a mode is accurate on a large indefinite
+KKT. Rejected modes remain failures; there is no fallback or relaxed tolerance.
+
+The report separates factorization and warm phase-33 time, records effective
+threads, numerical errors, dense-buffer bytes and process peak RSS. Larger
+batches may reduce solve time but consume more host memory. No batch budget or
+partial-solve mode is enabled automatically, and isolated timings do not
+certify whole-BCP or original MATLAB/Panua speed parity.
+
 ## Sparse solver backends
 
 CMake selects one explicit backend:

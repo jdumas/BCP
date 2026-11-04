@@ -51,6 +51,7 @@ parameterize = "python scripts/pixi_tasks.py parameterize"
 compare = "python scripts/pixi_tasks.py compare"
 compare-reference = "python scripts/pixi_tasks.py compare --mode reference"
 compare-parity = "python scripts/pixi_tasks.py compare --mode parity"
+controlled-compare = "python scripts/pixi_tasks.py controlled-compare"
 
 # Preserve the original direct, in-memory MATLAB engine for the full-performance
 # path. MATLAB itself is a separately licensed installation, not a Conda package.

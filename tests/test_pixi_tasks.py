@@ -142,6 +142,20 @@ class PixiTaskTests(unittest.TestCase):
             self.invoke(["compare"])
         self.assertEqual(result.exception.code, 2)
 
+    def test_controlled_build_is_explicit_and_does_not_leak_into_production(self):
+        calls=self.invoke(['controlled-compare','--input','mesh.obj','--work-dir','work'],'octave')
+        self.assertIn('-DBCP_BUILD_CONTROLLED_VALIDATION=ON',calls[0].args[0])
+        self.assertIn('GIF_controlled',calls[1].args[0])
+        self.assertIn('scripts/controlled_compare.py',calls[-1].args[0])
+        for command in ('configure','build','test','compare'):
+            ordinary=self.invoke([command],'octave')
+            self.assertIn('-DBCP_BUILD_CONTROLLED_VALIDATION=OFF',ordinary[0].args[0])
+
+    def test_controlled_validation_requires_octave(self):
+        for env in ('default','matlab'):
+            with self.assertRaises(SystemExit) as result:self.invoke(['controlled-compare'],env)
+            self.assertEqual(result.exception.code,2)
+
     def test_compare_routes_mode_and_solver_metadata(self):
         calls = self.invoke(["compare", "--mode", "reference", "--trace"], "octave")
         command = calls[-1].args[0]

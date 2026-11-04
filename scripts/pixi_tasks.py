@@ -59,7 +59,7 @@ def runtime_environment(build, engine, octave=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("configure", "build", "test", "parameterize", "compare"))
+    parser.add_argument("command", choices=("configure", "build", "test", "parameterize", "compare", "controlled-compare"))
     parser.add_argument("--engine", choices=("native", "matlab", "octave"),
                         default={"matlab": "matlab", "octave": "octave", "octave-source": "octave"}.get(os.environ.get("PIXI_ENVIRONMENT_NAME"), "native"))
     parser.add_argument("--solver", choices=("ACCELERATE", "MKL", "EIGEN", "PANUA"),
@@ -68,12 +68,14 @@ def main():
     parser.add_argument("--gpu", action="store_true", help="Require both CUDA tensors and the GIF GPU evaluator")
     parser.add_argument("--gif-backend", choices=("auto", "native", "torch"))
     args, extra = parser.parse_known_args()
-    if extra and args.command not in ("parameterize", "compare"):
+    if extra and args.command not in ("parameterize", "compare", "controlled-compare"):
         parser.error(f"Unexpected arguments: {extra}")
     if args.gpu and args.command != "test":
         parser.error("--gpu is a test mode; parameterize/compare accept --device/--gif-device or --mode")
-    if (args.full or args.gpu or args.command == "compare") and args.engine == "native":
+    if (args.full or args.gpu or args.command in ("compare", "controlled-compare")) and args.engine == "native":
         parser.error("--full/--gpu/compare requires a MATLAB or Octave pipeline environment")
+    if args.command == "controlled-compare" and args.engine != "octave":
+        parser.error("controlled-compare currently requires the license-free Octave environment")
     source_octave = args.engine == "octave" and os.environ.get("PIXI_ENVIRONMENT_NAME") == "octave-source"
     suffix = "-source" if source_octave else ""
     build = ROOT / "build" / f"pixi-{args.solver.lower()}-{args.engine}{suffix}"
@@ -100,7 +102,7 @@ def main():
                 parser.error("Octave is missing. Use the Pixi octave environment; no runtime test will be silently skipped.")
             octave_executable = str(Path(octave_executable).resolve())
         env["BCP_OCTAVE_EXECUTABLE"] = octave_executable
-    if args.command in ("configure", "build", "test", "parameterize", "compare"):
+    if args.command in ("configure", "build", "test", "parameterize", "compare", "controlled-compare"):
         command = [
             "cmake", "-S", ROOT, "-B", build, "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
@@ -112,6 +114,7 @@ def main():
             f"-DBCP_TEST_PIPELINE={'ON' if args.full or args.engine != 'native' else 'OFF'}",
             f"-DPython3_EXECUTABLE={sys.executable}",
         ]
+        command.append(f"-DBCP_BUILD_CONTROLLED_VALIDATION={'ON' if args.command == 'controlled-compare' else 'OFF'}")
         if octave_executable:
             command.append(f"-DBCP_OCTAVE_EXECUTABLE={octave_executable}")
         if args.engine == "matlab" and os.environ.get("Matlab_ROOT_DIR"):
@@ -121,7 +124,10 @@ def main():
         env = runtime_environment(build, args.engine, octave_executable)
     if args.command == "configure":
         return
-    run(["cmake", "--build", build, "--config", "Release", "--parallel", "4"], env)
+    build_command = ["cmake", "--build", build, "--config", "Release", "--parallel", "4"]
+    if args.command == "controlled-compare":
+        build_command += ["--target", "GIF_controlled"]
+    run(build_command, env)
     if args.command == "build":
         return
     if args.gif_backend:
@@ -133,6 +139,12 @@ def main():
             env["BCP_TORCH_REFERENCE_DEVICE"] = "cuda:0"
             print(f"Required devices: PyTorch=cuda:0, GIF={env['BCP_GIF_DEVICE']}", flush=True)
         run(["ctest", "--test-dir", build, "-C", "Release", "--output-on-failure", "--no-tests=error"], env)
+    elif args.command == "controlled-compare":
+        env["BCP_LINEAR_SOLVER"] = args.solver
+        try:
+            run([sys.executable, "scripts/controlled_compare.py", *extra], env)
+        except subprocess.CalledProcessError as error:
+            raise SystemExit(error.returncode) from error
     elif args.command == "compare":
         env["BCP_LINEAR_SOLVER"] = args.solver
         env["BCP_SCRIPT_ENGINE"] = args.engine

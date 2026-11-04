@@ -77,7 +77,7 @@ else()
 endif()
 target_include_directories(bcp_script_engine PUBLIC "${gif_root}")
 target_link_libraries(bcp_script_engine PUBLIC bcp_mat)
-add_executable(GIF
+set(bcp_gif_sources
     portable/gif_main.cpp
     "${gif_root}/GIF/GIF.cpp"
     "${gif_root}/CGAL/CGAL_Borders.cpp"
@@ -93,30 +93,42 @@ add_executable(GIF
     "${gif_root}/Utils/triangulation.cpp"
     "${gif_root}/Utils/Utilities.cpp"
     ${gif_energy} ${gif_parser})
-target_include_directories(GIF PRIVATE "${gif_root}" "${gif_root}/Utils" "${gmm_SOURCE_DIR}/include")
-target_include_directories(GIF SYSTEM BEFORE PRIVATE "${boost_SOURCE_DIR}")
-target_compile_definitions(GIF PRIVATE TRILIBRARY ANSI_DECLARATORS _USE_MATH_DEFINES NOMINMAX
-    BCP_MATLAB_SCRIPTS_DIR="${gif_root}/MatlabScripts")
-# GMM 4.2 still uses the removed C++ register storage-class specifier.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(GIF PRIVATE -Wno-register)
-endif()
-# GMM 4.2 predates C++17 and still uses std::binary_function on MSVC.
-if(MSVC)
-    target_compile_definitions(GIF PRIVATE _HAS_AUTO_PTR_ETC=1)
-endif()
-target_link_libraries(GIF PRIVATE bcp_igl bcp_mat bcp_linear_solver bcp_script_engine CGAL::CGAL Boost::headers nlopt Threads::Threads)
-# Legacy code has large template translation units; don't run many of them at once.
+# Production GIF and the optional validation-only GIF_controlled share every
+# source and setting; GIF_controlled only adds compile-time guarded hooks.
+function(bcp_configure_gif_target target)
+    target_include_directories(${target} PRIVATE "${gif_root}" "${gif_root}/Utils" "${gmm_SOURCE_DIR}/include")
+    target_include_directories(${target} SYSTEM BEFORE PRIVATE "${boost_SOURCE_DIR}")
+    target_compile_definitions(${target} PRIVATE TRILIBRARY ANSI_DECLARATORS _USE_MATH_DEFINES NOMINMAX
+        BCP_MATLAB_SCRIPTS_DIR="${gif_root}/MatlabScripts")
+    # GMM 4.2 still uses the removed C++ register storage-class specifier.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE -Wno-register)
+    endif()
+    # GMM 4.2 predates C++17 and still uses std::binary_function on MSVC.
+    if(MSVC)
+        target_compile_definitions(${target} PRIVATE _HAS_AUTO_PTR_ETC=1)
+    endif()
+    target_link_libraries(${target} PRIVATE bcp_igl bcp_mat bcp_linear_solver bcp_script_engine CGAL::CGAL Boost::headers nlopt Threads::Threads)
+    # Legacy code has large template translation units; don't run many of them at once.
+    set_property(TARGET ${target} PROPERTY JOB_POOL_COMPILE bcp_gif_compile)
+    if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE" AND BCP_OCTAVE_EXECUTABLE)
+        target_compile_definitions(${target} PRIVATE BCP_DEFAULT_OCTAVE_EXECUTABLE="${BCP_OCTAVE_EXECUTABLE}")
+    endif()
+    if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE" AND TARGET bcp_torch_energy_native)
+        add_dependencies(${target} bcp_torch_energy_native)
+        target_compile_definitions(${target} PRIVATE
+            BCP_TORCH_NATIVE_DIR="$<TARGET_FILE_DIR:bcp_torch_energy_native>"
+            BCP_TORCH_MODULE_DIR="${PROJECT_SOURCE_DIR}/BCP/GIF_and_CM")
+    endif()
+endfunction()
 set_property(GLOBAL APPEND PROPERTY JOB_POOLS bcp_gif_compile=2)
-set_property(TARGET GIF PROPERTY JOB_POOL_COMPILE bcp_gif_compile)
-if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE" AND BCP_OCTAVE_EXECUTABLE)
-    target_compile_definitions(GIF PRIVATE BCP_DEFAULT_OCTAVE_EXECUTABLE="${BCP_OCTAVE_EXECUTABLE}")
-endif()
-if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE" AND TARGET bcp_torch_energy_native)
-    add_dependencies(GIF bcp_torch_energy_native)
-    target_compile_definitions(GIF PRIVATE
-        BCP_TORCH_NATIVE_DIR="$<TARGET_FILE_DIR:bcp_torch_energy_native>"
-        BCP_TORCH_MODULE_DIR="${PROJECT_SOURCE_DIR}/BCP/GIF_and_CM")
+add_executable(GIF ${bcp_gif_sources})
+bcp_configure_gif_target(GIF)
+if(BCP_BUILD_CONTROLLED_VALIDATION)
+    # Diagnostic-only: canonical energy-row/patch ordering and stage capture/replay.
+    add_executable(GIF_controlled ${bcp_gif_sources} portable/ControlledValidation.cpp)
+    bcp_configure_gif_target(GIF_controlled)
+    target_compile_definitions(GIF_controlled PRIVATE BCP_CONTROLLED_VALIDATION)
 endif()
 if(BCP_BUILD_TESTS)
     add_executable(bcp_pardiso_linear_solver_test tests/pardiso_linear_solver.cpp
