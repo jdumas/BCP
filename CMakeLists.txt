@@ -101,6 +101,9 @@ if(BCP_BUILD_TESTS)
                 --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/torch_energy_reference.m")
             set_tests_properties(torch_energy_reference PROPERTIES
                 ENVIRONMENT "${bcp_torch_test_env}" TIMEOUT 180)
+            add_test(NAME matlab_sampling_reference COMMAND "${BCP_OCTAVE_EXECUTABLE}"
+                --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/matlab_sampling_reference.m")
+            set_tests_properties(matlab_sampling_reference PROPERTIES TIMEOUT 60)
             add_test(NAME controller_reference COMMAND "${BCP_OCTAVE_EXECUTABLE}"
                 --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/controller_reference.m")
             set_tests_properties(controller_reference PROPERTIES

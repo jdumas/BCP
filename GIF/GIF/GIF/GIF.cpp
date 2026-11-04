@@ -1370,8 +1370,7 @@ bool GIF::TransferBorderFacesAndVerticesToMatlab()
 		GMMDenseColMatrix numFaces(1, 1);
 		numFaces(0, 0) = mCgalMesh.size_of_facets();
 		MatlabGMMDataExchange::SetEngineDenseMatrix("numFaces", numFaces);
-		MatlabInterface::GetEngine().EvalToCout("rng(1);");
-		MatlabInterface::GetEngine().EvalToCout("randomTrianglesIndices = (randperm(numFaces(1, 1)) - 1).';");
+		MatlabInterface::GetEngine().EvalToCout("randomTrianglesIndices = (bcp_randperm_matlab(numFaces(1, 1), 1) - 1).';");
 		GMMDenseColMatrix randomTriangles;
 		MatlabGMMDataExchange::GetEngineDenseMatrix("randomTrianglesIndices", randomTriangles);
 		int i = 0;

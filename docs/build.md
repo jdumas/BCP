@@ -459,13 +459,13 @@ CM duplicate-triplet assembly fixes; macOS results remain those recorded above.
 - `pixi run test` (Linux): **6/6 CTest checks pass**, including real MKL-backed CM/PT
   numerical tests and core Python tests. The optional Torch math and bridge tests skip in
   this lightweight environment because Torch/Octave are not installed there.
-- `pixi run -e octave test`: **16/16 CTest checks pass, no skips**. The full
+- `pixi run -e octave test`: **17/17 CTest checks pass, no skips**. The full
   environment runs all Python unit tests (including finite-difference gradient
   and unprojected-Hessian checks for the analytic Torch implementation, KKT checker
   tests, comparison harness tests, and live in-process Octave/Torch bridge tests),
   plus `pardiso_linear_solver`, `octave_transport`, `controller_reference`, and
   `compare_reference_diagnostics`.
-- `pixi run -e octave test-gpu`: **16/16 CTest checks pass, no skips**, with
+- `pixi run -e octave test-gpu`: **17/17 CTest checks pass, no skips**, with
   `cuda:0` and the `inprocess` native bridge (`bcp_torch_energy_native.oct`)
   confirmed for both Python tensor processing and the GIF Torch energy
   evaluator. Both IDT variants produce finite, non-flipped UVs. The 65
@@ -484,6 +484,12 @@ CM duplicate-triplet assembly fixes; macOS results remain those recorded above.
 - Validated versions include GCC 13, oneMKL 2026.1, Octave 10.3, Python 3.11,
   NumPy 1.26.4 and libigl 2.6.3. Runtime linkage was checked: MKL LP64/core/GNU
   threading and a single libgomp come from the project-local Pixi environment.
+- `matlab_sampling_reference` checks MATLAB-compatible full `randperm` sampling
+  against published MathWorks examples and independent MT19937 fixtures. Octave's
+  `rng(1); randperm(n)` has different seeding and permutation semantics; the
+  compatibility helper preserves the original factory-MT19937 interior-face
+  sample instead of changing the objective's sampled faces. MATLAB execution
+  still calls its native `rng`/`randperm`. No sample count or stopping rule changes.
 - `cm_pattern` compares CM's CSR values and subsequent value updates against
   independent duplicate-triplet assembly. Duplicate representatives returned by
   `unique_rows` are not run boundaries; CM derives the boundaries from its sorted
