@@ -27,7 +27,7 @@ if strcmp(backend, 'torch')
     end
     info = bcp_torch_energy('start', device);
     enabled = double(strncmp(info.device, 'cuda', 4));
-    fprintf('GIF evaluator backend: torch (%s)\n', info.device);
+    fprintf('GIF evaluator backend: torch (%s, %s)\n', info.device, info.backend);
 else
     if is_octave, bcp_torch_energy('close'); end
     enabled = double(bcp_gpu_enabled(mode));

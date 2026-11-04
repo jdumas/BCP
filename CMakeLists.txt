@@ -67,6 +67,17 @@ if(BCP_BUILD_TESTS)
     if(Python3_Interpreter_FOUND)
         add_test(NAME python_unit COMMAND "${Python3_EXECUTABLE}" -m unittest discover
             -s "${PROJECT_SOURCE_DIR}/tests" -p "test_*.py" -v)
+        if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE")
+            if(BCP_OCTAVE_EXECUTABLE)
+                set_property(TEST python_unit APPEND PROPERTY ENVIRONMENT
+                    "BCP_OCTAVE_EXECUTABLE=${BCP_OCTAVE_EXECUTABLE}"
+                    "BCP_TORCH_MODULE_DIR=${PROJECT_SOURCE_DIR}/BCP/GIF_and_CM")
+            endif()
+            if(TARGET bcp_torch_energy_native)
+                set_property(TEST python_unit APPEND PROPERTY ENVIRONMENT
+                    "BCP_TORCH_NATIVE_DIR=$<TARGET_FILE_DIR:bcp_torch_energy_native>")
+            endif()
+        endif()
     elseif(BCP_TEST_PIPELINE)
         message(FATAL_ERROR "The full pipeline test requires Python")
     endif()
@@ -78,23 +89,36 @@ if(BCP_BUILD_TESTS)
         set_tests_properties(full_pipeline PROPERTIES
             ENVIRONMENT "BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}" TIMEOUT 1250)
         if(BCP_SCRIPT_ENGINE STREQUAL "OCTAVE")
+            set(bcp_torch_test_env
+                "BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+                "BCP_OCTAVE_EXECUTABLE=${BCP_OCTAVE_EXECUTABLE}"
+                "BCP_TORCH_MODULE_DIR=${PROJECT_SOURCE_DIR}/BCP/GIF_and_CM")
+            if(TARGET bcp_torch_energy_native)
+                list(APPEND bcp_torch_test_env
+                    "BCP_TORCH_NATIVE_DIR=$<TARGET_FILE_DIR:bcp_torch_energy_native>")
+            endif()
             add_test(NAME torch_energy_reference COMMAND "${BCP_OCTAVE_EXECUTABLE}"
                 --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/torch_energy_reference.m")
             set_tests_properties(torch_energy_reference PROPERTIES
-                ENVIRONMENT "BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}" TIMEOUT 180)
+                ENVIRONMENT "${bcp_torch_test_env}" TIMEOUT 180)
             add_test(NAME controller_reference COMMAND "${BCP_OCTAVE_EXECUTABLE}"
                 --no-gui --quiet "${PROJECT_SOURCE_DIR}/tests/controller_reference.m")
             set_tests_properties(controller_reference PROPERTIES
-                ENVIRONMENT "BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}" TIMEOUT 180)
+                ENVIRONMENT "${bcp_torch_test_env}" TIMEOUT 180)
             add_test(NAME full_pipeline_torch_cpu COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/full_pipeline.py")
             set_tests_properties(full_pipeline_torch_cpu PROPERTIES
-                ENVIRONMENT "BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE};BCP_DEVICE=cpu;BCP_GIF_DEVICE=cpu;BCP_GIF_BACKEND=torch" TIMEOUT 1250)
+                ENVIRONMENT "${bcp_torch_test_env};BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_DEVICE=cpu;BCP_GIF_DEVICE=cpu;BCP_GIF_BACKEND=torch" TIMEOUT 1250)
             add_test(NAME compare_reference_diagnostics COMMAND "${Python3_EXECUTABLE}"
                 "${PROJECT_SOURCE_DIR}/scripts/compare.py" --mode reference --grid-size 10 --target-faces 60
                 --trace --kkt-diagnostics)
             set_tests_properties(compare_reference_diagnostics PROPERTIES
-                ENVIRONMENT "BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_PYTHON_EXECUTABLE=${Python3_EXECUTABLE};BCP_OCTAVE_EXECUTABLE=${BCP_OCTAVE_EXECUTABLE};BCP_LINEAR_SOLVER=${BCP_LINEAR_SOLVER}"
+                ENVIRONMENT "${bcp_torch_test_env};BCP_BIN_DIR=$<TARGET_FILE_DIR:GIF>;BCP_LINEAR_SOLVER=${BCP_LINEAR_SOLVER}"
                 TIMEOUT 600)
+            if(TARGET bcp_torch_energy_native)
+                set_property(TEST full_pipeline APPEND PROPERTY ENVIRONMENT
+                    "BCP_TORCH_NATIVE_DIR=$<TARGET_FILE_DIR:bcp_torch_energy_native>"
+                    "BCP_TORCH_MODULE_DIR=${PROJECT_SOURCE_DIR}/BCP/GIF_and_CM")
+            endif()
         endif()
     endif()
     add_executable(bcp_mkl_contract_test tests/mkl_contract.cpp portable/pardiso_mkl.cpp)

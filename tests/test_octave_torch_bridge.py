@@ -52,9 +52,11 @@ def run_octave(script_body, native_dir=None, device="cpu", timeout=600):
         env["BCP_TORCH_REFERENCE_DEVICE"] = device
         if native_dir:
             env["BCP_TORCH_NATIVE_DIR"] = native_dir
+        else:
+            env.pop("BCP_TORCH_NATIVE_DIR", None)
         completed = subprocess.run(
             [octave, "--no-gui", "--quiet", script],
-            capture_output=True, text=True, timeout=timeout, env=env)
+            capture_output=True, text=True, timeout=timeout, env=env, cwd=tmp)
     output = completed.stdout + completed.stderr
     if completed.returncode != 0:
         raise AssertionError(f"Octave bridge case failed ({completed.returncode}):\n{output}")

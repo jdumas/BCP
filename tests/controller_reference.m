@@ -9,6 +9,9 @@ function [x_out, final_E, iters, cones] = run_controller_once(base_GIF, x0, numD
     if use_torch
         info = bcp_torch_energy('start', device);
         assert(strcmp(info.device, device));
+        if ~isempty(getenv('BCP_TORCH_NATIVE_DIR'))
+            assert(strcmp(info.backend, 'inprocess'), ['Expected native in-process bridge, got: ', info.backend]);
+        end
         GIF.useGPU = strncmp(info.device, 'cuda', 4);
         GIF.computeBackend = 'torch';
     else
@@ -38,6 +41,8 @@ end
 
 root = fileparts(fileparts(mfilename('fullpath')));
 addpath(fullfile(root, 'GIF', 'GIF', 'MatlabScripts'));
+native_dir = getenv('BCP_TORCH_NATIVE_DIR');
+if ~isempty(native_dir), addpath(native_dir); end
 device = getenv('BCP_TORCH_REFERENCE_DEVICE');
 if isempty(device), device = 'cpu'; end
 cleanup = onCleanup(@close_worker_bridge);

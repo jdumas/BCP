@@ -21,6 +21,9 @@ if isempty(device), device = 'cpu'; end
 info = bcp_torch_energy('start', device);
 cleanup = onCleanup(@close_evaluator_bridge);
 assert(strcmp(info.device, device));
+if ~isempty(native_dir)
+    assert(strcmp(info.backend, 'inprocess'), ['Expected native in-process bridge, got: ', info.backend]);
+end
 pid = info.pid;
 rng(42);
 N = 4;

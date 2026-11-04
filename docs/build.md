@@ -251,15 +251,47 @@ pixi run -e octave parameterize path/to/disk.obj outputs/disk_torch_cpu.obj --de
 
 `torch_energy.py` ports only the analytic E/G/H evaluator in float64/complex128;
 it does not use autograd Hessians or change Newton, line searches, scaffold
-remeshing, or the CPU Cholesky/MKL solves. Jacobians, area/fixed-variable data
-and constant derivative blocks stay in one persistent worker/device cache per
-scaffold. Inner steps send only the current free coordinates and receive the
-needed outputs: G and the derivative vectors remain unchanged, while only the
-Hessian block consumed by the CPU solve is downloaded. That block is selected
-after the full analytic calculation, so its entries are unchanged. Old device
-caches are released before re-prepare, and conjugate matrices use lazy views.
-Communication uses framed
-binary pipes, **not MAT files or a new Python process per iteration**.
+remeshing, or the CPU Cholesky/MKL solves. In the Octave build,
+`bcp_torch_energy_native.oct` embeds CPython + NumPy in the Octave process and
+invokes `torch_energy.py` directly, with no worker subprocess, pipe IPC, or
+JSON/byte serialization per iteration. Jacobians, area/fixed-variable data and
+constant derivative blocks stay in one persistent device cache per scaffold
+(prepared via Fortran-order NumPy views of the Octave input buffers). Inner
+steps upload only the current free coordinate vector `x` and write requested
+outputs directly into Octave-owned buffers after reading dynamic foldover shapes
+from device metadata, avoiding any intermediate `evaluate() -> NumPy -> memcpy`
+host pass on $O(F)$ outputs. Only the Hessian block consumed by the CPU solve
+is downloaded (selected on-device after the full analytic calculation, so its
+entries are unchanged).
+
+**Data movement and layout ledger (not a blanket zero-copy claim):**
+- **Input wrapping vs device/cache copies:** `prepare` wraps Octave input
+  matrices (`J_fz`, `J_fbz`, `area`, `fixed_indices`, `fixed_values`, optional
+  `hessian_indices`) as Fortran-order NumPy views with `astype(np.float64, copy=False)`
+  so already-`float64` real inputs (`area`, `x`, etc.) are not duplicated into
+  an extra NumPy host buffer before `torch.tensor(...)` copies/uploads them into
+  its own persistent device/cache storage.
+- **Output downloads:** 1D/vector outputs (`foldovers`, `fz`, `fbz`, `G`) are
+  contiguous and copy directly from device tensors into wrapped Octave output
+  buffers without an intermediate `evaluate() -> NumPy -> memcpy` host pass;
+  `1x1` scalars (`E`, or single-face outputs) use a 1-element staging cell
+  because Octave stores scalars without a shareable matrix buffer.
+- **H-only device packing:** the selected 2D Hessian block `H` is produced in
+  row-major order on the device while Octave owns column-major (`Fortran`-order)
+  matrix storage, so `_copy_device_into` performs a device-side transpose
+  gather (`source.t()`) into a contiguous device temporary before issuing a
+  single contiguous device-to-host copy into Octave's column-major buffer (no
+  host transpose intermediate, but an explicit device-side layout-packing pass
+  on `H`).
+- **Unavoidable layout work in other stages:** Octave engine MAT v5 transfers
+  in `OctaveInterface.cpp` borrow column-major `double` setter buffers directly
+  (`MAT_F_DONT_COPY_DATA`) and decode getters straight into caller destinations,
+  but MAT v5 still requires split real/imaginary staging for complex matrices,
+  row/column-major conversion when caller layout is row-major, and `matio`'s
+  internal file-read buffer in `Mat_VarRead`. Likewise, `PardisoLinearSolver`
+  passes distinct `GMMDenseColMatrix` RHS/solution buffers directly to the
+  compatibility solver backends while keeping an internal copy fallback only
+  when RHS and solution alias (or on the Panua path).
 
 MKL PARDISO and native PT remain CPU algorithms. Keeping the original division
 of work avoids introducing a new GPU sparse solver or rewriting the optimizer.
@@ -414,31 +446,41 @@ The Linux results below were recorded before this macOS port; they have not
 been rerun on Linux in the macOS session.
 
 - `pixi run test` (Linux): **5/5 CTest checks pass**, including real MKL-backed CM/PT
-  numerical tests and core Python tests. The optional Torch math tests skip in
-  this lightweight environment because Torch is not installed there.
-- `pixi run -e octave test`: **11/11 CTest checks pass, no skips**. The full
-  environment runs 41 Python unit tests, including finite-difference gradient
-  and unprojected-Hessian checks for the analytic Torch implementation.
-- `pixi run -e octave test-gpu`: **11/11 CTest checks pass, no skips**, with
-  `cuda:0` confirmed for both Python tensor processing and the GIF Torch energy
-  evaluator. Both IDT variants produce finite, non-flipped UVs. The same 65
-  reference comparisons pass with the Torch evaluator running on CUDA.
-- Live Octave parity validates 65 evaluations, including full-output comparisons
-  and the selected Hessian block:
+  numerical tests and core Python tests. The optional Torch math and bridge tests skip in
+  this lightweight environment because Torch/Octave are not installed there.
+- `pixi run -e octave test`: **15/15 CTest checks pass, no skips**. The full
+  environment runs all Python unit tests (including finite-difference gradient
+  and unprojected-Hessian checks for the analytic Torch implementation, KKT checker
+  tests, comparison harness tests, and live in-process Octave/Torch bridge tests),
+  plus `pardiso_linear_solver`, `octave_transport`, `controller_reference`, and
+  `compare_reference_diagnostics`.
+- `pixi run -e octave test-gpu`: **15/15 CTest checks pass, no skips**, with
+  `cuda:0` and the `inprocess` native bridge (`bcp_torch_energy_native.oct`)
+  confirmed for both Python tensor processing and the GIF Torch energy
+  evaluator. Both IDT variants produce finite, non-flipped UVs. The 65
+  reference comparisons and 25-step matched controller replay pass with the
+  Torch evaluator running on CUDA.
+- Live Octave parity validates 65 evaluations in `torch_energy_reference.m` plus
+  the dedicated bridge suite (`test_octave_torch_bridge.py`), including full-output
+  comparisons and the selected Hessian block:
   fixed/all-fixed variables, foldover filtering, zero-fbz conventions and both
-  Hessian modes, including payloads larger than the pipe buffer. It verifies
-  worker reuse and that evaluate does not re-upload the Jacobians.
+  Hessian modes. It verifies in-process evaluator reuse, exact upload/download
+  byte ledgers, output buffer ownership, and that `evaluate` does not re-upload
+  the Jacobians.
 - Both complete BCP variants (IDT disabled/enabled) pass with the native Octave
-  evaluator and with the Torch-on-CPU evaluator, producing finite UVs and no
-  flipped/collapsed triangles.
+  evaluator and with the in-process Torch evaluator on CPU and CUDA, producing
+  finite UVs and no flipped/collapsed triangles.
 - Validated versions include GCC 13, oneMKL 2026.1, Octave 10.3, Python 3.11,
   NumPy 1.26.4 and libigl 2.6.3. Runtime linkage was checked: MKL LP64/core/GNU
   threading and a single libgomp come from the project-local Pixi environment.
 - The separate stub-MKL contract test checks API/control translation; it is not
   being substituted for the real MKL numerical tests above. Native tests also
-  reuse indefinite factors for full 16-RHS and partial 3-RHS batches.
+  exercise `PardisoLinearSolver` direct multi-RHS/aliased solves, factor reuse
+  and solver diagnostics (`pardiso_linear_solver`), and `OctaveInterface` borrowed
+  MAT setter / direct getter transfers (`octave_transport`).
 - Script-engine regressions cover chunked/split-sentinel output, large complex
-  MAT roundtrips and a hung worker reaching the configured read timeout.
+  MAT roundtrips, no-op `bcp_torch_energy('close')` without initializing Python/CUDA,
+  and explicit failure on unstarted `stats`.
 - Manual compile-only Octave builds without an interpreter still report the
   live numerical test as **Skipped**. Full Pixi test environments require a real
   runtime and cannot silently skip their integration gate.
@@ -479,23 +521,24 @@ Timeout controls cover different scopes:
   This includes startup and every solver iteration.
 - `BCP_OCTAVE_TIMEOUT_MS`: per-engine-evaluation deadline, default 600000 ms
   (10 min), maximum 86400000 ms.
-- `BCP_TORCH_TIMEOUT_SECONDS`: legacy per-request pipe read deadline (default 600 s)
-  used only when a pipe-based worker is active; once the in-process native Torch
-  bridge replaces the worker, worker-pipe read timeouts retire and timeout
-  enforcement is governed by the outer `BCP_OCTAVE_TIMEOUT_MS` and
-  `BCP_NATIVE_TIMEOUT_SECONDS` process watchdogs (which do not promise asynchronous
-  mid-kernel cancellation inside an in-process CUDA call).
+- Retired worker-pipe read timeout (`BCP_TORCH_TIMEOUT_SECONDS`): removed
+  together with `torch_energy_worker.py` when the in-process native Torch
+  bridge (`bcp_torch_energy_native.oct`) replaced the worker subprocess.
+  Timeout enforcement is governed by the outer `BCP_OCTAVE_TIMEOUT_MS` and
+  `BCP_NATIVE_TIMEOUT_SECONDS` watchdogs, which terminate the Octave/native
+  process group on timeout rather than promising asynchronous mid-kernel
+  cancellation of an in-process CUDA call.
 
 For a deliberately longer run, configure both the whole-process deadline and
-any applicable per-evaluation/request deadlines; a longer inner deadline does
-not override a shorter outer timeout.
+`BCP_OCTAVE_TIMEOUT_MS`; a longer inner deadline does not override a shorter
+outer timeout.
 
 ## Runtime overrides and command protocol
 
 `BCP_BIN_DIR`, `BCP_CM_EXE`, `BCP_PT_EXE`, `BCP_GIF_EXE`,
 `BCP_CACHE_DIR`, `BCP_DEVICE`, `BCP_GIF_DEVICE`, `BCP_GIF_BACKEND`,
-`BCP_PYTHON_EXECUTABLE`, and `BCP_OCTAVE_EXECUTABLE` override discovery
-without source edits. CUDA is selected when available; the manifest no longer
+`BCP_PYTHON_EXECUTABLE`, `BCP_OCTAVE_EXECUTABLE`, `BCP_TORCH_NATIVE_DIR`, and
+`BCP_TORCH_MODULE_DIR` override discovery without source edits. CUDA is selected when available; the manifest no longer
 forces CPU-only Torch wheels. A hardware-specific Torch index can be configured
 through Pixi when needed.
 

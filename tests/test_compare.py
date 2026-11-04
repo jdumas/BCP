@@ -374,6 +374,7 @@ Final Esd = 2.03125
         # Verify main() returns non-zero when a requested gate fails.
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(compare, "run_single_mode_pipeline", return_value=bad_trace_run), \
+             mock.patch.object(compare, "run_matched_controller_replay", return_value={"ok": True}), \
              redirect_stdout(io.StringIO()):
             mesh = Path(tmp) / "disk.obj"
             compare.generate_curved_disk_mesh(mesh, grid_size=4)

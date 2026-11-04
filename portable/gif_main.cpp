@@ -15,7 +15,19 @@ int main(int argc, char** argv) try {
     if (!std::getenv("BCP_OCTAVE_EXECUTABLE"))
         bcp::set_environment("BCP_OCTAVE_EXECUTABLE", BCP_DEFAULT_OCTAVE_EXECUTABLE);
 #endif
+#ifdef BCP_TORCH_MODULE_DIR
+    if (!std::getenv("BCP_TORCH_MODULE_DIR"))
+        bcp::set_environment("BCP_TORCH_MODULE_DIR", BCP_TORCH_MODULE_DIR);
+#endif
     MatlabInterface::GetEngine().AddScriptPath(BCP_MATLAB_SCRIPTS_DIR);
+    if (const char* native_dir = std::getenv("BCP_TORCH_NATIVE_DIR")) {
+        if (native_dir[0] != '\0') MatlabInterface::GetEngine().AddScriptPath(native_dir);
+    }
+#ifdef BCP_TORCH_NATIVE_DIR
+    else {
+        MatlabInterface::GetEngine().AddScriptPath(BCP_TORCH_NATIVE_DIR);
+    }
+#endif
     GIF program;
     const bool success=program.run(
         std::filesystem::absolute(argv[1]).string(), std::filesystem::absolute(argv[2]).string(),

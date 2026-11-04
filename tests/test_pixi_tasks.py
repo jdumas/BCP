@@ -123,6 +123,8 @@ class PixiTaskTests(unittest.TestCase):
         calls = self.invoke(["test", "--gif-backend", "torch"], "octave")
         self.assertEqual(calls[-1].kwargs["env"]["BCP_GIF_BACKEND"], "torch")
         self.assertEqual(calls[-1].kwargs["env"]["BCP_PYTHON_EXECUTABLE"], sys.executable)
+        self.assertIn("pixi-mkl-octave", calls[-1].kwargs["env"]["BCP_TORCH_NATIVE_DIR"])
+        self.assertTrue(calls[-1].kwargs["env"]["BCP_TORCH_MODULE_DIR"].endswith("GIF_and_CM"))
 
     def test_gpu_test_requires_a_pipeline_environment(self):
         with self.assertRaises(SystemExit) as result:

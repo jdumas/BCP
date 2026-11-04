@@ -367,6 +367,18 @@ def run_matched_controller_replay(
     if not octave:
         raise RuntimeError("Octave executable required for matched controller replay")
     env = dict(os.environ, BCP_PYTHON_EXECUTABLE=sys.executable, BCP_TORCH_REFERENCE_DEVICE=candidate_device, BCP_COMPARE_TRACE_PATH="1")
+    env.setdefault("BCP_TORCH_MODULE_DIR", str(ROOT / "BCP" / "GIF_and_CM"))
+    if not env.get("BCP_TORCH_NATIVE_DIR"):
+        bin_dir = env.get("BCP_BIN_DIR")
+        candidates = ([Path(bin_dir).parent, Path(bin_dir)] if bin_dir else []) + [
+            ROOT / "build" / "pixi-mkl-octave",
+            ROOT / "build" / "pixi-accelerate-octave",
+            ROOT / "build" / "pixi-accelerate-octave-source",
+        ]
+        for candidate in candidates:
+            if (candidate / "bcp_torch_energy_native.oct").is_file():
+                env["BCP_TORCH_NATIVE_DIR"] = str(candidate.resolve())
+                break
     proc = subprocess.run(
         [octave, "--no-gui", "--quiet", str(ROOT / "tests" / "controller_reference.m")],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout_seconds, check=True,

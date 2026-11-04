@@ -160,7 +160,7 @@ def _real_float64(name, value):
         if np.any(array.imag != 0):
             raise ValueError(f"{name} must be real")
         array = array.real
-    return array.astype(np.float64)
+    return array.astype(np.float64, copy=False)
 
 
 def _column(name, array, length):

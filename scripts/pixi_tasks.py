@@ -31,6 +31,9 @@ def runtime_environment(build, engine, octave=None):
     env = os.environ.copy()
     env["BCP_BIN_DIR"] = str(build / "bin")
     env["BCP_PYTHON_EXECUTABLE"] = sys.executable
+    if engine == "octave":
+        env["BCP_TORCH_NATIVE_DIR"] = str(build)
+        env["BCP_TORCH_MODULE_DIR"] = str(ROOT / "BCP" / "GIF_and_CM")
     if octave:
         env["BCP_OCTAVE_EXECUTABLE"] = octave
     # MATLAB DLLs must also be on PATH for a directly linked Windows executable.
