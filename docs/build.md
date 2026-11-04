@@ -206,7 +206,15 @@ also set `use_GPU = true` unconditionally (the later face-count condition did no
 turn it off). It used `gpuArray` for energy/gradient/Hessian evaluation, then
 `gather` before the CPU Cholesky solve. Those numerical kernels remain unchanged.
 
-Device choices are explicit and independent:
+The full BCP CLI on Linux/Windows now defaults to **required CUDA** for Python
+and **required GPU** for GIF, as in the original code. Missing CUDA errors rather
+than quietly running a slow CPU path. macOS retains its supported CPU default.
+CM-only execution does not initialize or require a GPU. Explicit arguments and
+caller-provided environment choices take precedence, including an explicit
+`auto` request. CPU numerical reference execution remains available via
+`compare-reference` or `--device cpu --gif-device cpu`.
+
+Device choices are independent:
 
 | Control | Applies to | Values |
 | --- | --- | --- |
@@ -219,8 +227,9 @@ selections fail if unavailable; they never silently become CPU computations.
 The native code passes GIF's policy into the engine explicitly, even when a
 Windows MATLAB COM server was started before the CLI. The device is selected
 once per run. MATLAB reuses the existing `gpuArray` branch. Octave GPU requests
-select the PyTorch evaluator; ordinary CPU/auto requests retain the native
-Octave evaluator unless `--gif-backend torch` is explicitly selected.
+select the PyTorch evaluator. Explicit CPU/auto requests retain the native
+Octave evaluator unless `--gif-backend torch` is explicitly selected; `auto` is
+not the full-pipeline Linux/Windows default.
 
 Original-style GPU execution requires MATLAB with Parallel Computing Toolbox,
 a working CUDA device, and a CUDA-enabled Torch installation:
@@ -230,7 +239,8 @@ pixi run -e matlab parameterize path/to/disk.obj outputs/disk_gpu.obj --device c
 pixi run -e matlab test-gpu
 ```
 
-MATLAB-free CUDA evaluation is wired through the optional Torch backend:
+MATLAB-free CUDA evaluation uses the in-process Torch backend. On Linux this
+is the default full-pipeline route (the explicit flags below are equivalent):
 
 ```sh
 pixi run -e octave parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
@@ -305,9 +315,10 @@ from Linux/CUDA placement runs.
 
 ## Explicit comparison modes (`reference` vs `parity`)
 
-Comparisons must not rely on implicit `auto` defaults (which select CPU for
-Octave GIF when `--gif-device` is omitted). `scripts/compare.py` and the Pixi
-tasks provide two named presets outside CTest's single-thread smoke limits:
+Comparisons use named presets rather than caller-specific `auto` choices.
+The ordinary Linux/Windows BCP CLI requires CUDA/GPU by default; the comparison
+presets below additionally fix the evaluator/solver and verify actual placement,
+outside CTest's single-thread smoke limits:
 
 - **`reference` (`pixi run -e octave compare-reference`)**: runs the unchanged
   original `.m` logic through Octave on CPU (`--device cpu --gif-device cpu --gif-backend native`)
@@ -330,8 +341,14 @@ For a supplied `--input`, omitting `--target-faces` preserves the original
 budget. The generated small fixture defaults to 80 faces; an explicit
 `--target-faces` overrides either case.
 
-All GIF stage and total timings use `CGAL::Real_timer` wall-clock semantics so
-child interpreter and GPU work are included on POSIX. Untimed diagnostic flags
+All GIF algorithm-stage and total timings use `CGAL::Real_timer` wall-clock
+semantics so interpreter and GPU waits during the algorithm are included on
+POSIX. The compute-policy/CPython/Torch/CUDA setup occurs before that algorithm
+timer; the outer `wall_seconds` measurement includes it and process/engine
+startup. Do not equate reported algorithm stages with a cold process run or
+assume the author's MATLAB COM server had the same warm/cold state. The first
+complex-abs CUDA JIT compile may also land inside the first evaluation when
+persistent kernel caching is unavailable. Untimed diagnostic flags
 can be enabled for separate validation runs without adding copies or I/O to
 normal timed runs. Reports label these as `validation_with_diagnostic_io`:
 wall/stage timings in those runs include trace/dump I/O and are not pure solver
@@ -470,9 +487,10 @@ KKT. Rejected modes remain failures; there is no fallback or relaxed tolerance.
 
 The report separates factorization and warm phase-33 time, records effective
 threads, numerical errors, dense-buffer bytes and process peak RSS. Larger
-batches may reduce solve time but consume more host memory. No batch budget or
-partial-solve mode is enabled automatically, and isolated timings do not
-certify whole-BCP or original MATLAB/Panua speed parity.
+batches may reduce solve time but consume more host memory. The probe itself
+does not change production controls or enable partial solves; the validated
+production full-solve batching policy is specified below. Isolated timings do
+not certify whole-BCP or original MATLAB/Panua speed parity.
 
 ## Sparse solver backends
 
@@ -504,10 +522,17 @@ versions before the sparse LU API introduced in 15.5. Panua-specific controls
 are not passed to Accelerate, and failed refactorizations invalidate old factors.
 
 The Panua backend retains its selected-inverse algorithm and sparsity pattern.
-Accelerate/MKL/Eigen instead reuse the KKT factors and solve bounded batches of the needed
-cone columns; the batch size is capped by a per-buffer memory budget.
-Mathematical equivalence does not establish performance parity: realistic mesh
-benchmarks against the original backend are still required. Thread counts are
+Accelerate/MKL/Eigen instead reuse the KKT factors and solve bounded batches of
+the needed cone columns. The batch policy is
+`max(1, min(nDOF, 32, floor(256 MiB / (rows * sizeof(double)))))`:
+B and X are each bounded to 256 MiB (512 MiB combined), except when one column
+already exceeds the budget. This avoids forcing inefficient batch sizes 1–2 on
+large meshes while keeping an explicit host-memory bound. There is still one
+factorization, reused for all columns and the final full UV back-substitution.
+No experimental partial/sparse-RHS mode, Schur formulation or fallback is enabled.
+Policy bounds, full/partial RHS batches and independent large-KKT residual checks
+cover this path. Mathematical equivalence alone does not establish performance
+parity: compare production runs and peak memory, not diagnostic-I/O timings. Thread counts are
 not forcibly reduced to one in production; tests explicitly constrain OpenMP to one thread.
 
 Manual CMake configurations (normally Pixi tasks supply the environment):

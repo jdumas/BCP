@@ -10,6 +10,17 @@ for folder in (ROOT / "BCP", ROOT / "BCP/utils", ROOT / "BCP/GIF_and_CM"):
     sys.path.insert(0, str(folder))
 
 
+def apply_compute_defaults(method):
+    """The primary CUDA pipeline keeps main's GPU placement; CPU is explicit.
+
+    macOS retains its supported CPU path because Metal cannot run these dtypes.
+    Caller-provided arguments/environment always win over platform defaults.
+    """
+    if method == "bcp":
+        os.environ.setdefault("BCP_DEVICE", "cpu" if sys.platform == "darwin" else "cuda:0")
+        os.environ.setdefault("BCP_GIF_DEVICE", "cpu" if sys.platform == "darwin" else "gpu")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Consistently oriented triangle disk (OBJ)")
@@ -27,6 +38,7 @@ def main():
         os.environ["BCP_GIF_DEVICE"] = args.gif_device
     if args.gif_backend:
         os.environ["BCP_GIF_BACKEND"] = args.gif_backend
+    apply_compute_defaults(args.method)
     os.environ.setdefault("BCP_PYTHON_EXECUTABLE", sys.executable)
     from GIF_and_CM import consts
     required = [consts.ROOT_PATH_CM_EXE]

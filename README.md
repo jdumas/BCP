@@ -39,7 +39,8 @@ pixi run -e octave-source build-octave
 pixi run -e octave-source test
 # Original-style GPU path (MATLAB + CUDA required):
 pixi run -e matlab parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
-# Optional Torch evaluator under Octave (working CUDA required):
+# Linux full BCP defaults to required CUDA/GPU; explicit flags are equivalent:
+# MATLAB-free in-process Torch evaluator under Octave (working CUDA required):
 pixi run -e octave parameterize path/to/disk.obj outputs/disk_gpu.obj --device cuda:0 --gif-device gpu
 # License-free CPU numerical reference vs strict Linux/CUDA parity comparison:
 pixi run -e octave compare-reference
@@ -59,7 +60,12 @@ variants and **62 Python unit tests without skips**, inside the unchanged
 sandbox. The ordinary `octave` environment remains prebuilt. See the build
 guide for details.
 Linux MKL-backed native tests and both complete Octave pipeline variants have
-passed on CPU and CUDA (using the Torch evaluator). CM-only execution is not
+passed on CPU and CUDA (using the Torch evaluator). Linux/Windows full-pipeline
+execution requires GPU by default, matching the original placement; request
+both `--device cpu --gif-device cpu` for the CPU reference. macOS retains its CPU
+default. The license-free basis solver reuses factors with memory-bounded
+multi-RHS batches (up to 32 columns; at most 512 MiB of dense B/X buffers).
+CM-only execution is not
 a full BCP run; Intel Mac execution, Windows, MATLAB and performance parity
 remain unverified.
 

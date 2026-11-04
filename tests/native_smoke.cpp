@@ -10,6 +10,8 @@
 #include <iostream>
 
 #include "PardisoCompat.h"
+#include "RhsBatchPolicy.h"
+#include <climits>
 void require(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
@@ -49,9 +51,11 @@ void test_solver() {
     phase=33;
     pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,b,x,&error,dp);
     require(!error && (Eigen::Map<Eigen::Matrix2d>(x)-m.inverse()).norm()<1e-10,"Bad inverse-column solves");
-    // Reuse the same factors with full and partial production-sized RHS batches.
-    for (int first=0; first<19; first+=16) {
-        rhs=std::min(16,19-first);
+    // Reuse the same factors for full and partial batches from the production policy.
+    const int columns=35, batch=bcp::inverseColumnBatchSize(n,columns);
+    require(batch==32,"Unexpected small-system inverse-column batch");
+    for (int first=0; first<columns; first+=batch) {
+        rhs=std::min(batch,columns-first);
         std::vector<double> units(n*rhs,0.0), columns(n*rhs);
         for (int j=0;j<rhs;++j) units[n*j+(first+j)%n]=1.0;
         pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,
@@ -65,8 +69,25 @@ void test_solver() {
     phase=-1;
     pardiso(pt,&one,&one,&type,&phase,&n,a,ia,ja,&dummy,&rhs,ip,&dummy,b,x,&error,dp);
 }
+void test_rhs_batch_policy() {
+    using bcp::inverseColumnBatchSize;
+    // Black KKT (457717 rows, 206 cone columns) and largest suite system (~1.91M rows).
+    require(inverseColumnBatchSize(457717,206)==32,"Black batch");
+    require(inverseColumnBatchSize(1913871,1500)==17,"Large-mesh batch");
+    // Exactly 32 columns fit at 2^20 rows; one more row drops to 31.
+    require(inverseColumnBatchSize(1048576,206)==32 && inverseColumnBatchSize(1048577,206)==31,"32-column boundary");
+    // Never more columns than requested, and at least one column even when it exceeds the budget.
+    require(inverseColumnBatchSize(457717,5)==5 && inverseColumnBatchSize(457717,0)==1,"Column clamp");
+    require(inverseColumnBatchSize(33554432,206)==1 && inverseColumnBatchSize(33554433,206)==1 &&
+        inverseColumnBatchSize(INT_MAX,206)==1 && inverseColumnBatchSize(0,206)==32,"One-column floor");
+    for (int rows : {1, 3, 457717, 1048577, 1913871, 33554432}) {
+        const auto b = static_cast<std::uint64_t>(inverseColumnBatchSize(rows,1000));
+        require(2*b*std::uint64_t(rows)*sizeof(double) <= 2*bcp::kInverseColumnBufferBytes,"B+X budget");
+    }
+}
 int main(int argc, char** argv) try {
     require(argc==4,"Expected CM, PT and work directory");
+    test_rhs_batch_policy();
     test_solver();
     namespace fs=std::filesystem;
     fs::path dir=fs::path(argv[3]) / "path with spaces";

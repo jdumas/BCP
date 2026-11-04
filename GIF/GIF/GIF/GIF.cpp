@@ -25,6 +25,9 @@
 #ifdef BCP_CONTROLLED_VALIDATION
 #include "ControlledValidation.h"
 #endif
+#ifdef BCP_PARDISO_COMPAT
+#include "RhsBatchPolicy.h"
+#endif
 
 
 using namespace Eigen;
@@ -305,7 +308,13 @@ bool GIF::run(std::string obj_path, std::string uv_mat_path, bool run_IDT, bool 
 	// Pass the policy explicitly: a Windows MATLAB COM server may predate this
 	// process and therefore not inherit BCP_GIF_DEVICE from its environment.
 	const char* gpuMode = std::getenv("BCP_GIF_DEVICE");
-	if (!gpuMode) gpuMode = "auto";
+	if (!gpuMode) {
+#ifdef __APPLE__
+		gpuMode = "cpu"; // Retain the supported macOS CPU path; Metal lacks FP64.
+#else
+		gpuMode = "gpu"; // main requires GPU; CPU reference execution is explicit.
+#endif
+	}
 	auto& engine = MatlabInterface::GetEngine();
 	if (engine.SetEngineStringArray("BCP_GPU_MODE", 1, &gpuMode) != 0)
 		throw std::runtime_error("Cannot set GIF GPU policy");
@@ -1987,11 +1996,9 @@ bool GIF::calculateHarmonicBasisInPARDISO(int conesConstraintsStartRow)
 	// We only need inverse columns associated with cone constraints. Solving
 	// these unit right-hand sides is equivalent to PARDISO's selected inverse,
 	// without forming a dense inverse or solving for every matrix column.
-	// Batch small groups for MKL's multi-RHS solve without allocating a dense
-	// inverse. Bound each dense buffer to ~16 MiB (or at least one column).
-	const size_t columnsInBudget = (16u * 1024u * 1024u) /
-		(std::max(size_t(mSizeOfMatrix), size_t(1)) * sizeof(double));
-	const int batchSize = std::max(1, std::min(mNumDOF, int(std::min(size_t(16), columnsInBudget))));
+	// Batch columns for the multi-RHS solve without allocating a dense inverse;
+	// see RhsBatchPolicy.h for the memory bound.
+	const int batchSize = bcp::inverseColumnBatchSize(mSizeOfMatrix, mNumDOF);
 	GMMDenseColMatrix rhs, solution;
 	int batchIdx = 0;
 	for (int first = 0; first < mNumDOF; first += batchSize) {
