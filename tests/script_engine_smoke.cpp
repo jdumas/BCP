@@ -3,11 +3,8 @@
 #include <algorithm>
 #include <vector>
 #include <complex>
-#include <filesystem>
 #include <iostream>
 #ifdef BCP_OCTAVE_ENGINE
-#include <chrono>
-#include <thread>
 #include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -17,13 +14,6 @@ static void check(bool result, const char* message) {
     if (!result) throw std::runtime_error(message);
 }
 int main(int argc, char** argv) try {
-#ifdef BCP_OCTAVE_ENGINE
-    // popen2 passes the worker script as argv[1]; simulate a worker that hangs.
-    if (argc == 2) {
-        std::this_thread::sleep_for(std::chrono::seconds(30));
-        return 1;
-    }
-#endif
 #ifdef BCP_SKIP_SCRIPT_TEST
     std::cout << "Numerical script runtime unavailable; test not run\\n";
     return 77;
@@ -68,16 +58,14 @@ int main(int argc, char** argv) try {
         check(text==std::string(std::min(count,MAX_OUTPUT_BUFFER_SIZE-1),'x'),
               "Chunked output or sentinel framing changed");
     }
-    const auto executable=std::filesystem::canonical(argv[0]).string();
-    const char* worker=executable.c_str();
-    check(!engine.SetEngineStringArray("worker_stub",1,&worker),"Cannot set worker stub");
-    engine.Eval(
-        "saved_python = getenv('BCP_PYTHON_EXECUTABLE'); saved_timeout = getenv('BCP_TORCH_TIMEOUT_SECONDS');"
-        "setenv('BCP_PYTHON_EXECUTABLE',worker_stub); setenv('BCP_TORCH_TIMEOUT_SECONDS','1');"
-        "timeout_seen = false; try; bcp_torch_energy('start','cpu'); catch failure;"
-        "assert(strcmp(failure.identifier,'BCP:TorchTimeout'),failure.message); timeout_seen = true; end;"
-        "assert(timeout_seen); setenv('BCP_PYTHON_EXECUTABLE',saved_python);"
-        "setenv('BCP_TORCH_TIMEOUT_SECONDS',saved_timeout);");
+    // The per-step pipe worker and its per-read timeout are retired: the Torch
+    // evaluator now runs in-process (bcp_torch_energy_native) or as the CPU
+    // reference fallback.  Closing without a start is a no-op that must not
+    // require the native module, and stats without a start must fail.
+    engine.Eval("bcp_torch_energy('close');");
+    caught=false;
+    try { engine.Eval("bcp_torch_energy('stats');"); } catch(const std::exception&) { caught=true; }
+    check(caught,"Torch stats without a start were silently accepted");
     caught=false;
     try { engine.Eval("bcp_gpu_enabled('gpu');"); }
     catch(const std::exception&) { caught=true; }

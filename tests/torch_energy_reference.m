@@ -1,6 +1,8 @@
-% Compare all six outputs through the real persistent pipe to the original .m.
+% Compare all six outputs through the persistent evaluator bridge (native
+% in-process module when BCP_TORCH_NATIVE_DIR provides it, otherwise the CPU
+% reference fallback) to the original symmetricDirichletEnergy.m.
 1;
-function close_worker_bridge()
+function close_evaluator_bridge()
     bcp_torch_energy('close');
 end
 function check_close(actual, expected, label)
@@ -12,10 +14,12 @@ function check_close(actual, expected, label)
 end
 root = fileparts(fileparts(mfilename('fullpath')));
 addpath(fullfile(root, 'GIF', 'GIF', 'MatlabScripts'));
+native_dir = getenv('BCP_TORCH_NATIVE_DIR');
+if ~isempty(native_dir), addpath(native_dir); end
 device = getenv('BCP_TORCH_REFERENCE_DEVICE');
 if isempty(device), device = 'cpu'; end
 info = bcp_torch_energy('start', device);
-cleanup = onCleanup(@close_worker_bridge);
+cleanup = onCleanup(@close_evaluator_bridge);
 assert(strcmp(info.device, device));
 pid = info.pid;
 rng(42);
@@ -106,4 +110,4 @@ assert(caught);
 info = bcp_torch_energy('start', 'cpu');
 assert(info.prepare_count == 0 && info.evaluate_count == 0);
 bcp_torch_energy('close');
-fprintf('Torch evaluator (%s) matches original Octave E/G/H in %d evaluations; persistent cache/no per-step uploads and error recovery verified.\n', device, evaluations);
+fprintf('Torch evaluator (%s, %s) matches original Octave E/G/H in %d evaluations; persistent cache/no per-step uploads and error recovery verified.\n', device, info.backend, evaluations);

@@ -375,5 +375,91 @@ class TorchEnergyTest(unittest.TestCase):
             self.assertEqual(TorchEnergy("auto").device, "cpu")
 
 
+@unittest.skipIf(torch is None, "NumPy/PyTorch not installed")
+class TorchEnergyDeviceDownloadTest(unittest.TestCase):
+    """evaluate_device/write_into: device computation decoupled from host download."""
+
+    def make_prepared(self, device, seed=21, **kwargs):
+        problem, x = make_problem(seed=seed, **kwargs)
+        engine = TorchEnergy(device)
+        engine.prepare(problem["J_fz"], problem["J_fbz"], problem["area"],
+                       problem["fixed_indices"], problem["fixed_values"])
+        return engine, problem, x
+
+    def allocate(self, shapes, h_order="C"):
+        outputs = {}
+        for name, shape in shapes.items():
+            dtype = np.complex128 if name in ("fz", "fbz") else np.float64
+            outputs[name] = np.empty(shape, dtype=dtype, order=h_order if name == "H" else "C")
+        return outputs
+
+    def check_write_into(self, device):
+        engine, problem, x = self.make_prepared(device)
+        reference = engine.evaluate(x)
+        evaluation = engine.evaluate_device(x)
+        shapes = evaluation.output_shapes()
+        self.assertEqual({k: v.shape for k, v in reference.items()},
+                         {k: tuple(v) for k, v in shapes.items()})
+        outputs = self.allocate(shapes, h_order="F")  # Octave buffers are column-major
+        evaluation.write_into(outputs)
+        for key in reference:
+            np.testing.assert_array_equal(outputs[key], reference[key])
+        # Partial downloads fill only the requested entries.
+        partial = {"E": np.empty((1, 1)), "G": np.empty(shapes["G"])}
+        evaluation.write_into(partial)
+        np.testing.assert_array_equal(partial["E"], reference["E"])
+        np.testing.assert_array_equal(partial["G"], reference["G"])
+        # Caller buffers are not aliased by later evaluations.
+        engine.evaluate(x + 0.5)
+        for key in reference:
+            np.testing.assert_array_equal(outputs[key], reference[key])
+
+    def test_write_into_cpu_c_and_fortran_order(self):
+        self.check_write_into("cpu")
+
+    @unittest.skipIf(torch is None or not torch.cuda.is_available(), "CUDA is not available")
+    def test_write_into_cuda(self):
+        self.check_write_into("cuda:0")
+        # The CUDA evaluator agrees with the CPU evaluator on the same inputs.
+        engine_cpu, problem, x = self.make_prepared("cpu", seed=22)
+        engine_cuda = TorchEnergy("cuda:0")
+        engine_cuda.prepare(problem["J_fz"], problem["J_fbz"], problem["area"],
+                            problem["fixed_indices"], problem["fixed_values"])
+        out_cpu = engine_cpu.evaluate(x)
+        out_cuda = engine_cuda.evaluate(x)
+        np.testing.assert_array_equal(out_cuda["foldovers"], out_cpu["foldovers"])
+        for key in ("fz", "fbz", "E", "G", "H"):
+            np.testing.assert_allclose(out_cuda[key], out_cpu[key], rtol=1e-12, atol=1e-12)
+
+    def test_write_into_rejects_bad_targets(self):
+        engine, problem, x = self.make_prepared("cpu", seed=23)
+        evaluation = engine.evaluate_device(x)
+        shapes = evaluation.output_shapes()
+        with self.assertRaises(ValueError):  # unknown output name
+            evaluation.write_into({"nope": np.empty((1, 1))})
+        with self.assertRaises(ValueError):  # wrong shape
+            evaluation.write_into({"G": np.empty((1, 1))})
+        with self.assertRaises(TypeError):  # wrong dtype
+            evaluation.write_into({"E": np.empty((1, 1), dtype=np.float32)})
+        with self.assertRaises(TypeError):  # complex outputs require complex128
+            evaluation.write_into({"fz": np.empty(shapes["fz"])})
+        with self.assertRaises(ValueError):  # not writable
+            frozen = np.empty(shapes["G"])
+            frozen.flags.writeable = False
+            evaluation.write_into({"G": frozen})
+        with self.assertRaises(ValueError):  # not contiguous
+            evaluation.write_into({"H": np.empty((shapes["H"][0], 2 * shapes["H"][1]))[:, ::2]})
+
+    def test_write_into_empty_outputs(self):
+        # All faces flipped: fz/fbz are empty and must still download cleanly.
+        engine, problem, x = self.make_prepared("cpu", seed=24, fbz_ratio=2.0)
+        evaluation = engine.evaluate_device(x)
+        shapes = evaluation.output_shapes()
+        self.assertEqual(shapes["fz"], (0, 1))
+        outputs = self.allocate(shapes)
+        evaluation.write_into(outputs)
+        np.testing.assert_array_equal(outputs["E"], engine.evaluate(x)["E"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,15 @@ on the device after the full calculation, preserving its entries exactly while
 avoiding a full-Hessian download. GPU caches are released before a new scaffold
 is allocated; conjugates are lazy views rather than additional matrix copies.
 
+The device computation and the host download are separate steps so that an
+embedding caller (the Octave native bridge) can write results directly into
+caller-owned buffers: ``evaluate_device`` runs the analytic expressions and
+returns a :class:`_DeviceEvaluation` holding device tensors plus output-shape
+metadata, and ``_DeviceEvaluation.write_into`` copies the requested tensors
+straight into caller-allocated writable NumPy arrays (which may be views of
+foreign memory).  ``evaluate`` simply allocates fresh NumPy arrays and reuses
+the same download path, so both entry points produce identical values.
+
 Conventions preserved from the MATLAB reference:
 
 * The full coordinate vector is ``[real coordinates; imaginary coordinates]``
@@ -29,6 +38,89 @@ import numpy as np
 import torch
 
 __all__ = ["TorchEnergy"]
+
+
+def _copy_device_into(source, view):
+    """Copy a device tensor into a caller-provided writable NumPy array.
+
+    A Fortran-order (column-major) 2-D destination is filled by gathering the
+    transpose on the device and issuing a single contiguous device-to-host
+    copy into the target buffer; no host-side intermediate array is created.
+    """
+    source = source.reshape(view.shape)
+    if view.ndim == 2 and view.flags.f_contiguous and not view.flags.c_contiguous:
+        torch.from_numpy(view.T).copy_(source.t())
+    else:
+        torch.from_numpy(view).copy_(source)
+
+
+class _DeviceEvaluation:
+    """Device-resident results of one ``TorchEnergy`` evaluation.
+
+    Tensors remain on the compute device until ``write_into`` downloads the
+    requested entries directly into caller-allocated NumPy arrays, so no
+    fresh host result arrays are needed on the native-bridge path.
+    """
+
+    __slots__ = ("_device", "_foldovers", "_fz", "_fbz", "_energy", "_gradient", "_hessian")
+
+    def __init__(self, device, foldovers, fz, fbz, energy, gradient, hessian):
+        self._device = device
+        self._foldovers = foldovers
+        self._fz = fz
+        self._fbz = fbz
+        self._energy = energy
+        self._gradient = gradient
+        self._hessian = hessian
+
+    def output_shapes(self):
+        """Shape of every output matrix as produced by ``evaluate``."""
+        return {
+            "foldovers": (self._foldovers.shape[0], 1),
+            "fz": (self._fz.shape[0], 1),
+            "fbz": (self._fbz.shape[0], 1),
+            "E": (1, 1),
+            "G": (self._gradient.shape[0], 1),
+            "H": (self._hessian.shape[0], self._hessian.shape[1]),
+        }
+
+    @torch.inference_mode()
+    def write_into(self, outputs):
+        """Download the requested results into caller-owned NumPy arrays.
+
+        ``outputs`` maps a subset of the output names to writable NumPy arrays
+        of exactly the shapes reported by ``output_shapes`` (float64 for
+        ``foldovers``/``E``/``G``/``H``, complex128 for ``fz``/``fbz``).  Only
+        the provided entries are downloaded.  The copies complete
+        synchronously before this method returns.
+        """
+        expected = self.output_shapes()
+        tensors = {
+            "foldovers": (self._foldovers, np.float64),
+            "fz": (self._fz, np.complex128),
+            "fbz": (self._fbz, np.complex128),
+            "E": (self._energy, np.float64),
+            "G": (self._gradient, np.float64),
+            "H": (self._hessian, np.float64),
+        }
+        for name, array in outputs.items():
+            if name not in tensors:
+                raise ValueError(f"unknown TorchEnergy output {name!r}")
+            tensor, dtype = tensors[name]
+            view = np.asarray(array)
+            if view.dtype != dtype:
+                raise TypeError(f"{name} output must have dtype {dtype}, got {view.dtype}")
+            if view.shape != expected[name]:
+                raise ValueError(f"{name} output must have shape {expected[name]}, got {view.shape}")
+            if not view.flags.writeable:
+                raise ValueError(f"{name} output must be writable")
+            if not (view.flags.c_contiguous or view.flags.f_contiguous):
+                raise ValueError(f"{name} output must be C- or Fortran-contiguous")
+            _copy_device_into(tensor, view)
+        if self._device.type == "cuda":
+            # copy_ to pageable host memory is already blocking; make the
+            # synchronous-completion contract explicit for pinned staging.
+            torch.cuda.synchronize(self._device)
 
 
 def _select_device(device):
@@ -168,6 +260,26 @@ class TorchEnergy:
 
     @torch.inference_mode()
     def evaluate(self, x, spd=True, exclude_flips=True):
+        evaluation = self.evaluate_device(x, spd=spd, exclude_flips=exclude_flips)
+        shapes = evaluation.output_shapes()
+        outputs = {
+            "foldovers": np.empty(shapes["foldovers"], dtype=np.float64),
+            "fz": np.empty(shapes["fz"], dtype=np.complex128),
+            "fbz": np.empty(shapes["fbz"], dtype=np.complex128),
+            "E": np.empty(shapes["E"], dtype=np.float64),
+            "G": np.empty(shapes["G"], dtype=np.float64),
+            "H": np.empty(shapes["H"], dtype=np.float64),
+        }
+        evaluation.write_into(outputs)
+        return outputs
+
+    @torch.inference_mode()
+    def evaluate_device(self, x, spd=True, exclude_flips=True):
+        """Run the analytic E/G/H computation, keeping results on the device.
+
+        Returns a :class:`_DeviceEvaluation`; no host result arrays are
+        allocated here.  Only the free coordinate vector ``x`` is uploaded.
+        """
         prepared = self._prepared
         if prepared is None:
             raise RuntimeError("TorchEnergy.prepare must be called before evaluate")
@@ -266,11 +378,12 @@ class TorchEnergy:
             selection = prepared["hessian_indices"]
             H = H.index_select(0, selection).index_select(1, selection)
 
-        return {
-            "foldovers": (foldovers + 1).to(torch.float64).reshape(-1, 1).cpu().numpy(),
-            "fz": fz.reshape(-1, 1).cpu().numpy(),
-            "fbz": fbz.reshape(-1, 1).cpu().numpy(),
-            "E": E.reshape(1, 1).cpu().numpy(),
-            "G": G.reshape(-1, 1).cpu().numpy(),
-            "H": H.cpu().numpy(),
-        }
+        return _DeviceEvaluation(
+            self._torch_device,
+            foldovers=(foldovers + 1).to(torch.float64),
+            fz=fz,
+            fbz=fbz,
+            energy=E,
+            gradient=G,
+            hessian=H,
+        )
