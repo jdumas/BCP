@@ -325,6 +325,11 @@ tasks provide two named presets outside CTest's single-thread smoke limits:
   translation, no rescaling and no reflection), alongside Symmetric Dirichlet
   energy, quasi-conformal distortion, and local injectivity.
 
+For a supplied `--input`, omitting `--target-faces` preserves the original
+`max(10000, 0.01 * F)` simplification policy, including its fractional deletion
+budget. The generated small fixture defaults to 80 faces; an explicit
+`--target-faces` overrides either case.
+
 All GIF stage and total timings use `CGAL::Real_timer` wall-clock semantics so
 child interpreter and GPU work are included on POSIX. Untimed diagnostic flags
 can be enabled for separate validation runs without adding copies or I/O to
@@ -448,19 +453,19 @@ ctest --test-dir build/eigen --output-on-failure
 ## Validation status and limits
 
 macOS results and its current sandbox/runtime limitation are listed above.
-The Linux results below were recorded before this macOS port; they have not
-been rerun on Linux in the macOS session.
+The Linux checks below have been rerun after the native in-process bridge and
+CM duplicate-triplet assembly fixes; macOS results remain those recorded above.
 
-- `pixi run test` (Linux): **5/5 CTest checks pass**, including real MKL-backed CM/PT
+- `pixi run test` (Linux): **6/6 CTest checks pass**, including real MKL-backed CM/PT
   numerical tests and core Python tests. The optional Torch math and bridge tests skip in
   this lightweight environment because Torch/Octave are not installed there.
-- `pixi run -e octave test`: **15/15 CTest checks pass, no skips**. The full
+- `pixi run -e octave test`: **16/16 CTest checks pass, no skips**. The full
   environment runs all Python unit tests (including finite-difference gradient
   and unprojected-Hessian checks for the analytic Torch implementation, KKT checker
   tests, comparison harness tests, and live in-process Octave/Torch bridge tests),
   plus `pardiso_linear_solver`, `octave_transport`, `controller_reference`, and
   `compare_reference_diagnostics`.
-- `pixi run -e octave test-gpu`: **15/15 CTest checks pass, no skips**, with
+- `pixi run -e octave test-gpu`: **16/16 CTest checks pass, no skips**, with
   `cuda:0` and the `inprocess` native bridge (`bcp_torch_energy_native.oct`)
   confirmed for both Python tensor processing and the GIF Torch energy
   evaluator. Both IDT variants produce finite, non-flipped UVs. The 65
@@ -479,6 +484,10 @@ been rerun on Linux in the macOS session.
 - Validated versions include GCC 13, oneMKL 2026.1, Octave 10.3, Python 3.11,
   NumPy 1.26.4 and libigl 2.6.3. Runtime linkage was checked: MKL LP64/core/GNU
   threading and a single libgomp come from the project-local Pixi environment.
+- `cm_pattern` compares CM's CSR values and subsequent value updates against
+  independent duplicate-triplet assembly. Duplicate representatives returned by
+  `unique_rows` are not run boundaries; CM derives the boundaries from its sorted
+  triplets so the Hessian is independent of standard-library sort tie ordering.
 - The separate stub-MKL contract test checks API/control translation; it is not
   being substituted for the real MKL numerical tests above. Native tests also
   exercise `PardisoLinearSolver` direct multi-RHS/aliased solves, factor reuse

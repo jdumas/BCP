@@ -584,7 +584,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--grid-size", type=int, default=12)
-    parser.add_argument("--target-faces", type=int, default=80)
+    parser.add_argument("--target-faces", type=int, help="Override simplification; input meshes keep the original policy by default (generated fixture: 80)")
     parser.add_argument("--idt", action="store_true")
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--octave-timeout-ms", type=int, default=1800000)
@@ -621,9 +621,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             mesh_path = base_work / "generated_curved_disk.obj"
             vertices, faces = generate_curved_disk_mesh(mesh_path, grid_size=args.grid_size)
 
+        target_faces = args.target_faces
+        if args.input is None and target_faces is None:
+            target_faces = 80
         runs = {
             spec.mode: run_single_mode_pipeline(
-                spec, mesh_path, base_work / spec.mode, idt=args.idt, target_faces=args.target_faces,
+                spec, mesh_path, base_work / spec.mode, idt=args.idt, target_faces=target_faces,
                 timeout_seconds=args.timeout, octave_timeout_ms=args.octave_timeout_ms, threads=args.threads,
                 collect_traces=args.trace, collect_kkt=args.kkt_diagnostics, stop_after_basis=args.stop_after_basis,
             )

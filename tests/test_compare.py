@@ -23,6 +23,24 @@ spec.loader.exec_module(compare)
 
 
 class CompareHarnessTests(unittest.TestCase):
+    def test_simplification_policy_defaults_differ_for_input_and_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mesh = root / "input.obj"
+            compare.generate_curved_disk_mesh(mesh, grid_size=3)
+            for extra, expected in (
+                (["--input", str(mesh)], None),
+                ([], 80),
+                (["--input", str(mesh), "--target-faces", "10000"], 10000),
+            ):
+                with self.subTest(extra=extra), \
+                     mock.patch.object(compare, "run_single_mode_pipeline", return_value={}) as run, \
+                     mock.patch.object(compare, "build_comparison_report", return_value={"ok": True}), \
+                     redirect_stdout(io.StringIO()):
+                    result = compare.main(["--mode", "reference", "--work-dir", str(root), *extra])
+                    self.assertEqual(result, 0)
+                    self.assertEqual(run.call_args.kwargs["target_faces"], expected)
+
     def test_reference_mode_sets_cpu_native_without_cuda_probe(self):
         probe_called = False
 

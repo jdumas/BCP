@@ -7,6 +7,7 @@
 
 #include "PardisoSolver.h"
 #include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <thread>
 #include <igl/sortrows.h>
@@ -219,6 +220,13 @@ void PardisoSolver<vectorTypeI,vectorTypeS>::set_pattern(const vectorTypeI &II_,
   Eigen::MatrixXi M;
   Eigen::VectorXi IM_;
   igl::unique_rows(M_.leftCols(2).eval(), M, IM_, tI);
+  // unique_rows may pick any duplicate, not the start of its sorted run.
+  // The value sums below need actual run boundaries, regardless of tie order.
+  int run = 0;
+  for (int row = 0; row < M_.rows(); ++row)
+    if (row == 0 || M_(row,0) != M_(row-1,0) || M_(row,1) != M_(row-1,1))
+      IM_(run++) = row;
+  assert(run == M.rows());
   int numUniqueElements = M.rows();
   iis.resize(numUniqueElements);
   for (int i=0; i<numUniqueElements; ++i)
