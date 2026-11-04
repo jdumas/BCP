@@ -246,6 +246,62 @@ class OctaveTorchBridgeNativeTest(unittest.TestCase):
     def test_native_cpu_parity(self):
         run_octave(PARITY_CASE.replace("@DEVICE@", "cpu"), native_dir=NATIVE_DIR)
 
+    def test_native_dispatcher_does_not_retain_host_jacobians(self):
+        # whos counts live references, unlike RSS which includes allocator caches.
+        run_octave("""
+            bcp_torch_energy('start', 'cpu');
+            before = bcp_torch_energy('stats');
+            for F = [8192 16384]
+                J = complex(randn(F,16), randn(F,16)); B = 0.1 * J;
+                bcp_torch_energy('prepare', J, B, ones(F,1)/F, [], []);
+                clear J B;
+                after = bcp_torch_energy('stats');
+                assert(after.dispatcher_state_bytes < before.dispatcher_state_bytes + 4096, ...
+                       'Native dispatcher retained host scaffold arrays');
+            end
+            bcp_torch_energy('close');
+        """, native_dir=NATIVE_DIR)
+
+    def test_borrowed_inputs_are_readonly_and_module_cannot_unload(self):
+        # A diagnostic subclass retains an input view to exercise capsule lifetime
+        # across calls, while reusing the actual evaluator rather than fake math.
+        with tempfile.TemporaryDirectory(prefix="bcp_readonly_") as folder:
+            original = os.path.join(REPO_ROOT, "BCP", "GIF_and_CM", "torch_energy.py")
+            with open(os.path.join(folder, "torch_energy.py"), "w") as handle:
+                handle.write(textwrap.dedent(f"""
+                    import importlib.util, sys
+                    import numpy as np
+                    spec = importlib.util.spec_from_file_location("_bcp_real_energy", {original!r})
+                    base = importlib.util.module_from_spec(spec)
+                    sys.modules[spec.name] = base
+                    spec.loader.exec_module(base)
+                    class TorchEnergy(base.TorchEnergy):
+                        def prepare(self, *args, **kwargs):
+                            assert all(not np.asarray(v).flags.writeable for v in args)
+                            self.borrowed = args[0]
+                            self.snapshot = args[0].copy()
+                            return super().prepare(*args, **kwargs)
+                        def evaluate_device(self, x, *args, **kwargs):
+                            assert not np.asarray(x).flags.writeable
+                            np.testing.assert_array_equal(self.borrowed, self.snapshot)
+                            return super().evaluate_device(x, *args, **kwargs)
+                """))
+            quoted = folder.replace("'", "''")
+            run_octave(f"""
+                setenv('BCP_TORCH_MODULE_DIR', '{quoted}');
+                bcp_torch_energy('start', 'cpu');
+                J = randn(9,4) + 1i * randn(9,4); B = 0.1 * J;
+                bcp_torch_energy('prepare', J, B, ones(9,1), [], []);
+                J(:) = 0; clear J;
+                assert(mislocked('bcp_torch_energy_native'));
+                clear -f bcp_torch_energy_native;
+                assert(mislocked('bcp_torch_energy_native'));
+                [fi,fz,fbz,E,G,H] = bcp_torch_energy('evaluate',ones(8,1),true,1);
+                assert(all(isfinite([E;G(:);H(:)])));
+                bcp_torch_energy('close');
+                assert(mislocked('bcp_torch_energy_native'));
+            """, native_dir=NATIVE_DIR)
+
     @unittest.skipUnless(cuda_available(), "CUDA is not available")
     def test_native_cuda_parity(self):
         run_octave(PARITY_CASE.replace("@DEVICE@", "cuda:0"), native_dir=NATIVE_DIR)

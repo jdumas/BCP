@@ -312,11 +312,40 @@ Final Esd = 2.03125
                 rc_bad = compare.main(["--check-kkt-dir", str(root)])
             self.assertEqual(rc_bad, 1)
 
+    def test_gates_verify_actual_runtime_placement(self):
+        for mode, device, backend in (
+            ("reference", "cpu", "native"),
+            ("parity", "gpu", "torch (cuda:0, inprocess)"),
+        ):
+            run = {"uv_metrics": {"locally_injective": True}, "gif_diagnostics": {
+                "gif_compute_device": device, "gif_evaluator_backend": backend}}
+            report = {"runs": {mode: run}}
+            self.assertTrue(compare.evaluate_report_gates(report)[0])
+            for field, failure in (
+                ("gif_compute_device", "unexpected_gif_device"),
+                ("gif_evaluator_backend", "unexpected_gif_backend"),
+            ):
+                with self.subTest(mode=mode, field=field):
+                    bad = {"runs": {mode: dict(run, gif_diagnostics={
+                        **run["gif_diagnostics"], field: "wrong"})}}
+                    ok, failures = compare.evaluate_report_gates(bad)
+                    self.assertFalse(ok)
+                    self.assertIn(f"{mode}:{failure}", failures)
+                    del bad["runs"][mode]["gif_diagnostics"][field]
+                    self.assertFalse(compare.evaluate_report_gates(bad)[0])
+            if mode == "parity":
+                # A legacy worker label or CPU Torch evaluation is not parity.
+                for wrong in ("torch (cuda:0)", "torch (cpu, inprocess)"):
+                    run["gif_diagnostics"]["gif_evaluator_backend"] = wrong
+                    self.assertFalse(compare.evaluate_report_gates(report)[0])
+
     def test_report_gates_and_nonzero_exit_on_failed_uv_trace_or_kkt(self):
         good_run = {
             "mode": "reference",
             "uv_metrics": {"locally_injective": True},
             "gif_diagnostics": {
+                "gif_compute_device": "cpu",
+                "gif_evaluator_backend": "native",
                 "steps": [
                     {
                         "remesh": 1,

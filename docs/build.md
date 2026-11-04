@@ -262,7 +262,11 @@ outputs directly into Octave-owned buffers after reading dynamic foldover shapes
 from device metadata, avoiding any intermediate `evaluate() -> NumPy -> memcpy`
 host pass on $O(F)$ outputs. Only the Hessian block consumed by the CPU solve
 is downloaded (selected on-device after the full analytic calculation, so its
-entries are unchanged).
+entries are unchanged). The native dispatcher retains only a prepared marker,
+not host Jacobians from old scaffolds; the CPU reference fallback retains the
+inputs it needs. Borrowed input views are read-only and output views are writable.
+The native module stays locked for the Octave process lifetime so Python capsule
+callbacks cannot outlive its code; `close` still releases the evaluator/device cache.
 
 **Data movement and layout ledger (not a blanket zero-copy claim):**
 - **Input wrapping vs device/cache copies:** `prepare` wraps Octave input
@@ -324,7 +328,9 @@ tasks provide two named presets outside CTest's single-thread smoke limits:
 All GIF stage and total timings use `CGAL::Real_timer` wall-clock semantics so
 child interpreter and GPU work are included on POSIX. Untimed diagnostic flags
 can be enabled for separate validation runs without adding copies or I/O to
-normal timed runs:
+normal timed runs. Reports label these as `validation_with_diagnostic_io`:
+wall/stage timings in those runs include trace/dump I/O and are not pure solver
+benchmarks. Use runs without these flags for performance measurements:
 
 - `--trace` (sets `BCP_COMPARE_TRACE_PATH`): emits per-step Newton energy,
   gradient norm, step norm, line-search step size, foldover count, and per-remesh

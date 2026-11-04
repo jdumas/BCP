@@ -43,7 +43,7 @@ GIF.initEnergy=E;
 timesRemeshed = timesRemeshed + 1;
 EitersCounter=0;
 if use_torch
-    % One upload per scaffold/remesh. Inner steps send only x over binary pipes.
+    % One upload per scaffold/remesh; inner steps upload x through the native bridge.
     hessian_indices = [numDOF1:(numDOFScaffold-1), (almostAllVars+1):totVars]';
     bcp_torch_energy('prepare', GIF.TJ_fz, GIF.TJ_fbz, GIF.TArea, GIF.FixedIndices, GIF.FixedValues, hessian_indices);
 elseif use_GPU

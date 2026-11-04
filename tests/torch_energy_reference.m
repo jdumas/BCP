@@ -75,7 +75,7 @@ for spd = [false true]
     check_close(G,G0,'zero-fbz G'); check_close(H,H0,'zero-fbz H');
     evaluations = evaluations + 1;
 end
-% Exercise payloads larger than the pipe buffer and reuse a prepared Jacobian.
+% Exercise larger arrays through the native bridge and reuse a prepared Jacobian.
 F = 129; N = 65;
 J = randn(F,N) + 1i * randn(F,N);
 B = 0.1 * J;

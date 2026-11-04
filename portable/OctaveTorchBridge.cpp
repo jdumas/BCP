@@ -32,6 +32,7 @@
 
 #include <oct.h>
 #include <defun-dld.h>
+#include <interpreter.h>
 
 #include <algorithm>
 #include <complex>
@@ -167,28 +168,27 @@ void delete_staging_capsule(PyObject* capsule) {
 }
 
 PyObject* wrap_with_capsule(void* data, octave_idx_type rows, octave_idx_type cols,
-                            int type_num, npy_intp itemsize, PyObject* capsule) {
+                            int type_num, npy_intp itemsize, PyObject* capsule, bool writable) {
     npy_intp dims[2] = {rows, cols};
     npy_intp strides[2] = {itemsize, itemsize * rows};
     py_ref array(PyArray_New(&PyArray_Type, 2, dims, type_num, strides, data, 0,
-                             NPY_ARRAY_WRITEABLE, nullptr));
+                             writable ? NPY_ARRAY_WRITEABLE : 0, nullptr));
     if (!array) {
         Py_DECREF(capsule);
         fail("BCP:TorchRuntime", python_error_string());
     }
     PyArray_UpdateFlags(reinterpret_cast<PyArrayObject*>(array.get()),
                         NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
-    if (PyArray_SetBaseObject(reinterpret_cast<PyArrayObject*>(array.get()), capsule) < 0) {
-        Py_DECREF(capsule);
+    // SetBaseObject steals capsule on both success and failure.
+    if (PyArray_SetBaseObject(reinterpret_cast<PyArrayObject*>(array.get()), capsule) < 0)
         fail("BCP:TorchRuntime", python_error_string());
-    }
     return array.release();
 }
 
 // Wrap an existing dense buffer as a Fortran-order NumPy view (no copy).  The
 // capsule base keeps the owning octave_value alive while Python holds the view.
 PyObject* wrap_buffer(void* data, octave_idx_type rows, octave_idx_type cols,
-                      int type_num, npy_intp itemsize, const octave_value& owner) {
+                      int type_num, npy_intp itemsize, const octave_value& owner, bool writable = false) {
     // PyArray_New with null data allocates its own buffer, which conflicts
     // with the ownership capsule; empty views use a never-touched placeholder.
     static std::int64_t empty_placeholder[2] = {0, 0};
@@ -199,20 +199,20 @@ PyObject* wrap_buffer(void* data, octave_idx_type rows, octave_idx_type cols,
         delete holder;
         fail("BCP:TorchRuntime", python_error_string());
     }
-    return wrap_with_capsule(data, rows, cols, type_num, itemsize, capsule);
+    return wrap_with_capsule(data, rows, cols, type_num, itemsize, capsule, writable);
 }
 
 // Wrap a caller-owned staging buffer (freed with the view).  Used for the
 // single-element values that Octave stores as scalars with no shareable
 // buffer; this is never used for O(F) data.
 PyObject* wrap_staging(void* data, octave_idx_type rows, octave_idx_type cols,
-                       int type_num, npy_intp itemsize) {
+                       int type_num, npy_intp itemsize, bool writable = false) {
     PyObject* capsule = PyCapsule_New(data, "bcp_staging", &delete_staging_capsule);
     if (capsule == nullptr) {
         std::free(data);
         fail("BCP:TorchRuntime", python_error_string());
     }
-    return wrap_with_capsule(data, rows, cols, type_num, itemsize, capsule);
+    return wrap_with_capsule(data, rows, cols, type_num, itemsize, capsule, writable);
 }
 
 // Wrap a dense double/complex-double Octave matrix as a NumPy view (no copy).
@@ -401,7 +401,7 @@ octave_value_list do_evaluate(const octave_value_list& args, int nargout) {
             staged[k] = std::calloc(1, itemsize);
             if (staged[k] == nullptr)
                 fail("BCP:TorchRuntime", "Out of memory staging a scalar output.");
-            view = py_ref(wrap_staging(staged[k], 1, 1, type_num, itemsize));
+            view = py_ref(wrap_staging(staged[k], 1, 1, type_num, itemsize, true));
         } else {
             octave_value value;
             void* data = nullptr;
@@ -414,15 +414,13 @@ octave_value_list do_evaluate(const octave_value_list& args, int nargout) {
                 value = octave_value(matrix);  // shares the buffer, stays complex
                 const ComplexMatrix shared = value.complex_matrix_value();
                 data = const_cast<std::complex<double>*>(shared.data());
-                if (rows * cols > 0)
-                    std::memset(data, 0,
-                                static_cast<size_t>(rows) * cols * sizeof(std::complex<double>));
+                // The download overwrites every element, including the marker.
             } else {
                 value = octave_value(Matrix(rows, cols));  // shares the buffer
                 const Matrix shared = value.matrix_value();
                 data = const_cast<double*>(shared.data());
             }
-            view = py_ref(wrap_buffer(data, rows, cols, type_num, itemsize, value));
+            view = py_ref(wrap_buffer(data, rows, cols, type_num, itemsize, value, true));
             results(k) = value;
         }
         if (PyDict_SetItemString(outputs.get(), kNames[k], view.get()) < 0)
@@ -446,7 +444,7 @@ octave_value_list do_evaluate(const octave_value_list& args, int nargout) {
     return results;
 }
 
-// Release the evaluator when the .oct is unloaded (clear/autoload or exit).
+// Release the evaluator at process exit; the module is locked while Python lives.
 // The interpreter itself is left running: finalizing embedded CPython with
 // live Torch state inside a host process teardown is not reliable.
 struct bridge_finalizer {
@@ -462,9 +460,12 @@ bridge_finalizer g_finalizer;
 
 }  // namespace
 
-DEFUN_DLD(bcp_torch_energy_native, args, nargout,
+DEFMETHOD_DLD(bcp_torch_energy_native, interp, args, nargout,
           "In-process Torch GIF energy evaluator (start/prepare/evaluate/close/stats).\n"
           "Reuses BCP/GIF_and_CM/torch_energy.py; normally driven by bcp_torch_energy.m.") {
+    // CPython and its capsules can outlive a call. Keep their destructors'
+    // module text loaded for the interpreter's process lifetime.
+    interp.mlock();
     if (args.length() < 1 || !args(0).is_string())
         error_with_id("BCP:TorchProtocol",
                       "bcp_torch_energy_native: the first argument must be an operation string.");

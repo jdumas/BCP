@@ -500,6 +500,7 @@ def run_single_mode_pipeline(
         "mode": spec.mode, "claim_scope": spec.claim_scope,
         "device": spec.device, "gif_device": spec.gif_device, "gif_backend": spec.gif_backend, "solver": spec.solver,
         "idt": bool(idt), "wall_seconds": float(wall_seconds),
+        "measurement_scope": "validation_with_diagnostic_io" if collect_traces or collect_kkt else "benchmark_wall",
         "children_maxrss_kb": int(max(rusage_before.ru_maxrss, rusage_after.ru_maxrss)),
         "stage_times": stage_times, "gif_diagnostics": parse_gif_diagnostics(combined),
         "uv_metrics": compute_uv_metrics(vertices, faces, uv_array) if uv_array is not None else None,
@@ -516,6 +517,13 @@ def evaluate_report_gates(
     if not runs:
         failures.append("no_runs_executed")
     for mode_name, run_data in runs.items():
+        diag = run_data.get("gif_diagnostics") or {}
+        expected_device = "gpu" if mode_name == "parity" else "cpu"
+        expected_backend = "torch (cuda:0, inprocess)" if mode_name == "parity" else "native"
+        if diag.get("gif_compute_device") != expected_device:
+            failures.append(f"{mode_name}:unexpected_gif_device")
+        if diag.get("gif_evaluator_backend") != expected_backend:
+            failures.append(f"{mode_name}:unexpected_gif_backend")
         if not stop_after_basis and not (run_data.get("uv_metrics") or {}).get("locally_injective", False):
             failures.append(f"{mode_name}:uv_not_locally_injective")
         if require_trace and not stop_after_basis:

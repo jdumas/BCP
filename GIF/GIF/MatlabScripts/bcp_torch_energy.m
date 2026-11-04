@@ -58,25 +58,29 @@ try
             values = varargin{5}(:);
             upload = array_bytes(varargin{1}) + array_bytes(varargin{2}) + ...
                      array_bytes(varargin{3}(:)) + array_bytes(fixed) + array_bytes(values);
-            prepared = struct('J_fz', varargin{1}, 'J_fbz', varargin{2}, ...
-                              'area', varargin{3}(:), 'fixed', fixed, 'values', values, ...
-                              'has_selection', false, 'selection', []);
-            if numel(varargin) >= 6
-                prepared.has_selection = true;
-                prepared.selection = varargin{6}(:);
-                upload = upload + array_bytes(prepared.selection);
+            has_selection = numel(varargin) >= 6;
+            selection = [];
+            if has_selection
+                selection = varargin{6}(:);
+                upload = upload + array_bytes(selection);
             end
             if strcmp(state.backend, 'native')
-                if prepared.has_selection
-                    bcp_torch_energy_native('prepare', prepared.J_fz, prepared.J_fbz, ...
-                                            prepared.area, prepared.fixed, prepared.values, ...
-                                            prepared.selection);
+                % Only the device cache is needed after upload. Do not retain
+                % the previous scaffold's host Jacobians across remeshing.
+                state.prepared = [];
+                if has_selection
+                    bcp_torch_energy_native('prepare', varargin{1}, varargin{2}, ...
+                                            varargin{3}(:), fixed, values, selection);
                 else
-                    bcp_torch_energy_native('prepare', prepared.J_fz, prepared.J_fbz, ...
-                                            prepared.area, prepared.fixed, prepared.values);
+                    bcp_torch_energy_native('prepare', varargin{1}, varargin{2}, ...
+                                            varargin{3}(:), fixed, values);
                 end
+                state.prepared = true;
+            else
+                state.prepared = struct('J_fz', varargin{1}, 'J_fbz', varargin{2}, ...
+                    'area', varargin{3}(:), 'fixed', fixed, 'values', values, ...
+                    'has_selection', has_selection, 'selection', selection);
             end
-            state.prepared = prepared;
             state.meta.prepare_count = state.meta.prepare_count + 1;
             state.meta.matrix_upload_bytes = state.meta.matrix_upload_bytes + upload;
         case 'evaluate'
@@ -112,7 +116,10 @@ try
             if strcmp(state.backend, 'native')
                 state.meta = bcp_torch_energy_native('stats');
             end
-            varargout{1} = state.meta;
+            info = whos('state');
+            meta = state.meta;
+            meta.dispatcher_state_bytes = info.bytes;
+            varargout{1} = meta;
         otherwise
             error('BCP:TorchProtocol', 'Unknown Torch evaluator operation: %s', operation);
     end
