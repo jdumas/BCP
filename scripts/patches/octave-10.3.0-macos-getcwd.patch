@@ -1,0 +1,23 @@
+--- a/libgnu/getcwd.c
++++ b/libgnu/getcwd.c
+@@ -199,7 +199,10 @@
+   size_t allocated = size;
+   size_t used;
+ 
+-#if HAVE_MINIMALLY_WORKING_GETCWD
++/* BCP: macOS has a working native getcwd.  Prefer it even when a
++   cross-compilation configure guess disabled this branch.  Unlike the
++   directory-walking fallback, it needs no ancestor directory listings.  */
++#if HAVE_MINIMALLY_WORKING_GETCWD || defined __APPLE__
+   /* If AT_FDCWD is not defined, the algorithm below is O(N**2) and
+      this is much slower than the system getcwd (at least on
+      GNU/Linux).  So trust the system getcwd's results unless they
+@@ -231,7 +234,7 @@
+         return strdup (dir);
+     }
+ 
+-# if HAVE_PARTLY_WORKING_GETCWD
++# if HAVE_PARTLY_WORKING_GETCWD || defined __APPLE__
+   /* The system getcwd works, except it sometimes fails when it
+      shouldn't, setting errno to ERANGE, ENAMETOOLONG, or ENOENT.    */
+   if (errno != ERANGE && errno != ENAMETOOLONG && errno != ENOENT)

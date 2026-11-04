@@ -11,6 +11,13 @@ class FaceBase : public CGAL::HalfedgeDS_face_base<Refs, CGAL::Tag_true>
 
 public:
 
+	using Base = CGAL::HalfedgeDS_face_base<Refs, CGAL::Tag_true>;
+	using Halfedge_handle = typename Base::Halfedge_handle;
+	using Halfedge_const_handle = typename Base::Halfedge_const_handle;
+	using Vertex_handle = typename Base::Vertex_handle;
+	using Vertex_const_handle = typename Base::Vertex_const_handle;
+	using Base::halfedge;
+
 	typedef enum FACE_STATE
 	{
 		FREE_FACE,
@@ -265,8 +272,8 @@ double FaceBase<Refs, Traits>::doubleArea() const
 
 		Point_3 referecePoint = p[0]; //can be any point on the plane of the polygon
 
-		Halfedge_around_facet_const_circulator hc = h->facet_begin();
-		Halfedge_around_facet_const_circulator hc_end = hc;
+		auto hc = h->facet_begin();
+		auto hc_end = hc;
 
 		doublePolygonArea = 0.0;
 

@@ -122,7 +122,7 @@ protected:
     std::string m_error_prefix; // prefix (displayed before indentation)
     std::ostream *m_out;  // logging destination
 	std::stringstream m_stbuf;
-    std::auto_ptr<std::ostream> m_null; // null IO stream (useful for discarding)
+    std::unique_ptr<std::ostream> m_null; // null IO stream (useful for discarding)
     bool m_clean_up_file; // whether the file needs to be closed and delete-ed
     bool m_auto_flush;    // whether to flush the output every time
 	int m_bSendToViewer; // 0 - no; 1 - yes, but change to zero if a problem occurs; 2 - yes

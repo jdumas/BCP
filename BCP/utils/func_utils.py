@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 
 COMPARISON_TOLERANCE = 1e-13
 

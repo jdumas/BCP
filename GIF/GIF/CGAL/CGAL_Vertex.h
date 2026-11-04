@@ -11,6 +11,10 @@ class Vertex_Base : public CGAL::HalfedgeDS_vertex_base<Refs, CGAL::Tag_true, ty
 
 public:
 
+	using Base = CGAL::HalfedgeDS_vertex_base<Refs, CGAL::Tag_true, typename Traits::Kernel::Point_3>;
+	using Halfedge_const_handle = typename Base::Halfedge_const_handle;
+	using Base::halfedge;
+
 #define GAUSS_CURVATURE_ZERO_TOLERANCE (1e-10)
 
 	Vertex_Base();
@@ -422,7 +426,7 @@ int Vertex_Base<Refs, Traits>::fullRotationIndex() const
 //otherwise, the angle deficit is further divided by the area of the mixed cell element to provide a pointwise approximation of the curvature.
 //computations are done based on the 3D embedding of the mesh.
 template<class Refs, typename Traits>
-double Vertex_Base<Refs, Traits>::gaussianCurvature(bool mixedCellAreaNormalization = false) const
+double Vertex_Base<Refs, Traits>::gaussianCurvature(bool mixedCellAreaNormalization) const
 {
 	double k = 0.0;
 
@@ -449,7 +453,7 @@ double Vertex_Base<Refs, Traits>::gaussianCurvature(bool mixedCellAreaNormalizat
 //otherwise, the angle deficit is further divided by the area of the mixed cell element to provide a pointwise approximation of the curvature.
 //computations are done based on the uv domain which is treated as a 3D mesh (embedded in 2D).
 template<class Refs, typename Traits>
-double Vertex_Base<Refs, Traits>::uvGaussianCurvature(bool mixedCellAreaNormalization = false) const
+double Vertex_Base<Refs, Traits>::uvGaussianCurvature(bool mixedCellAreaNormalization) const
 {
 	double k = 0.0;
 
@@ -613,7 +617,7 @@ double Vertex_Base<Refs, Traits>::prescribedConeAngle() const
 
 
 template<class Refs, typename Traits>
-double Vertex_Base<Refs, Traits>::uvConeAngle(bool UVOnHalfEdge = false) const
+double Vertex_Base<Refs, Traits>::uvConeAngle(bool UVOnHalfEdge) const
 {
 	double anglesSum = 0.0;
 
@@ -691,7 +695,7 @@ double Vertex_Base<Refs, Traits>::targetMetricConeAngle() const
 //otherwise, the angle deficit is further divided by the area of the mixed cell element to provide a pointwise approximation of the curvature.
 //computations are done based on the prescribed target metric (edge lengths).
 template<class Refs, typename Traits>
-double Vertex_Base<Refs, Traits>::targetMetricGaussianCurvature(bool mixedCellAreaNormalization = false) const
+double Vertex_Base<Refs, Traits>::targetMetricGaussianCurvature(bool mixedCellAreaNormalization) const
 {
 	double k = 0.0;
 
@@ -716,7 +720,7 @@ double Vertex_Base<Refs, Traits>::targetMetricGaussianCurvature(bool mixedCellAr
 //this function computes the mixed cell area (combination of Voronoi and barycentric area) for the given vertex.
 //area computation are either based on 3D embedding or the target metric.
 template<class Refs, typename Traits>
-double Vertex_Base<Refs, Traits>::mixedCellArea(bool useTargetMetric = false) const
+double Vertex_Base<Refs, Traits>::mixedCellArea(bool useTargetMetric) const
 {
 	double area = 0.0;
 

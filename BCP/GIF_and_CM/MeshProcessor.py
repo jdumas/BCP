@@ -2,7 +2,8 @@ import time
 import warnings
 from typing import Tuple
 
-from datetime import datetime
+from uuid import uuid4
+from pathlib import Path
 
 import os
 import numpy as np
@@ -69,12 +70,14 @@ def run_simplification(verts: np.ndarray, faces: np.ndarray) -> Tuple[
 
 
 def simplify_mesh(faces, verts, max_error=0.05, target_simplification_faces_count=None):
+    if target_simplification_faces_count is None:
+        target_simplification_faces_count = max(1e4, 0.01 * faces.shape[0])
+    if target_simplification_faces_count < 1:
+        raise ValueError("Target simplification face count must be positive")
     mesh = mrmeshnumpy.meshFromFacesVerts(faces, verts)
     start_simplification_time = time.time()
     mesh.packOptimally()
     settings = mrmeshpy.DecimateSettings()
-    if target_simplification_faces_count is None:
-        target_simplification_faces_count = max(1e4, 0.01 * faces.shape[0])
     settings.maxDeletedFaces = int(
         faces.shape[0] - target_simplification_faces_count)  # simplified version has at least 10,000 faces
     settings.maxError = max_error  # Maximum error when decimation stops
@@ -84,7 +87,8 @@ def simplify_mesh(faces, verts, max_error=0.05, target_simplification_faces_coun
     simplification_time = end_simplification_time - start_simplification_time
 
     # In order to extract the simplification result, meshlib requires saving it as .obj file and then load it
-    cur_time = datetime.now().strftime("%Y%m%d%H%M%S")
+    Path(ROOT_DIR_CACHE_MESHLIB).mkdir(parents=True, exist_ok=True)
+    cur_time = uuid4().hex
     tmp_obj_file = ROOT_DIR_CACHE_MESHLIB + "/" + cur_time + ".obj"
     start_simplification_time = time.time()
     mrmeshpy.saveMesh(mesh, tmp_obj_file)

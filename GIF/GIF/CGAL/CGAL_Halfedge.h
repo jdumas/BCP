@@ -10,6 +10,16 @@ class HalfedgeBase : public CGAL::HalfedgeDS_halfedge_base<Refs, CGAL::Tag_true,
 	#define CONFORMAL_FACTOR_EPSILON (1e-8)
 public:
 
+	using Base = CGAL::HalfedgeDS_halfedge_base<Refs, CGAL::Tag_true, CGAL::Tag_true, CGAL::Tag_true>;
+	using Halfedge_handle = typename Base::Halfedge_handle;
+	using Halfedge_const_handle = typename Base::Halfedge_const_handle;
+	using Base::vertex;
+	using Base::opposite;
+	using Base::next;
+	using Base::prev;
+	using Base::face;
+	using Base::is_border;
+
 	HalfedgeBase();
 	Point_3& uv();
 	const Point_3& uv() const;
@@ -143,7 +153,7 @@ bool HalfedgeBase<Refs, Traits>::is_border_edge() const
 
 //this function computes the two parts of the weight
 template<class Refs, typename Traits>
-double HalfedgeBase<Refs, Traits>::meanValueWeight(bool useTargetMetric = false) const
+double HalfedgeBase<Refs, Traits>::meanValueWeight(bool useTargetMetric) const
 {
 	assert(face()->is_triangle()); //making sure we don't have an n-gon or border edge
 	assert(!is_border_edge());
@@ -386,7 +396,7 @@ double HalfedgeBase<Refs, Traits>::angle() const
 //computes the angle that the halfedge points to, based on the uv layout
 //returns a number in the range 0..PI
 template<class Refs, typename Traits>
-double HalfedgeBase<Refs, Traits>::uvAngle(bool UVOnHalfEdge = false) const
+double HalfedgeBase<Refs, Traits>::uvAngle(bool UVOnHalfEdge) const
 {
 	if(is_border())
 	{
@@ -488,7 +498,7 @@ bool HalfedgeBase<Refs, Traits>::is_separating_edge() const
 //this function computes the part of the mixed cell area (combination of Voronoi and barycentric area) that belongs to the vertex-triangle pair.
 //based on the Caltech paper: "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds". See Fig 4 and Section 3.3.
 template<class Refs, typename Traits>
-double HalfedgeBase<Refs, Traits>::mixedCellArea(bool useTargetMetric = false) const
+double HalfedgeBase<Refs, Traits>::mixedCellArea(bool useTargetMetric) const
 {
 	assert(face()->is_triangle()); //making sure we don't have an n-gon
 	assert(!is_border()); //border halfedges belong to the outer face and are not associated with a vertex-triangle pair.

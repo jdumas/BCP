@@ -4,6 +4,11 @@
 
 #include "triangulation.h"
 #include "cassert"
+#include <cstdio>
+#include <cstring>
+#ifndef _MSC_VER
+#define sprintf_s std::snprintf
+#endif
 
 extern "C"
 {

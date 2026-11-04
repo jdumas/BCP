@@ -1,4 +1,7 @@
 #include <string>
+#include <algorithm>
+#include <cstdlib>
+#include <thread>
 #include "PardisoLinearSolver.h"
 #include "Utils/MatlabInterface.h"
 #include "Utils/MatlabGMMDataExchange.h"
@@ -28,13 +31,9 @@ bool PardisoLinearSolver::init(bool isHighlyIndefinite)
 	}
 
 	/* Numbers of processors, value of OMP_NUM_THREADS */
-	char *var = getenv("OMP_NUM_THREADS");
-	if (var != NULL)
-		sscanf(var, "%d", &mNumProcessors);
-	else{
-		std::cout << "OMP_NUM_THREADS is not set \n" << error;
-		return false;
-	}
+	const char *var = std::getenv("OMP_NUM_THREADS");
+	mNumProcessors = var ? std::max(std::atoi(var), 1)
+		: static_cast<int>(std::max(std::thread::hardware_concurrency(), 1u));
 
 	mPardisoInitialized = true;
 

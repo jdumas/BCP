@@ -10,11 +10,14 @@ if iter ~= 0
     numConvIters=5;
 end
 
-use_GPU = true;
-
-if size(GIF.F1, 1) > 2e5
-    use_GPU = true;
+% Keep the original GPU kernels. The CLI validates and caches the selection.
+if isfield(GIF, 'useGPU')
+    use_GPU = GIF.useGPU;
+else
+    use_GPU = bcp_gpu_enabled('auto');
 end
+
+use_torch = isfield(GIF, 'computeBackend') && strcmp(GIF.computeBackend, 'torch');
 
 n=(length(x_initial)+length(GIF.FixedIndices))/2;
 SPDHessian=true;
@@ -39,7 +42,11 @@ GIF.initTotalEnergy=E;
 GIF.initEnergy=E;
 timesRemeshed = timesRemeshed + 1;
 EitersCounter=0;
-if use_GPU
+if use_torch
+    % One upload per scaffold/remesh; inner steps upload x through the native bridge.
+    hessian_indices = [numDOF1:(numDOFScaffold-1), (almostAllVars+1):totVars]';
+    bcp_torch_energy('prepare', GIF.TJ_fz, GIF.TJ_fbz, GIF.TArea, GIF.FixedIndices, GIF.FixedValues, hessian_indices);
+elseif use_GPU
     % move arrays to gpu
     J_fz_gpu=gpuArray(GIF.TJ_fz);
     J_fbz_gpu=gpuArray(GIF.TJ_fbz);
@@ -51,7 +58,9 @@ for i=1:100
     Eprev=E;
 
     % ****find energy,gradient, hessian****
-    if use_GPU
+    if use_torch
+        [foldoversIndices, fz, fbz, E, G, H] = bcp_torch_energy('evaluate', x_initial, SPDHessian, 0);
+    elseif use_GPU
         x_gpu=gpuArray(x_initial);
         [foldoversIndices, fz_gpu,fbz_gpu,E_gpu,G_gpu,H_gpu ] = symmetricDirichletEnergy(x_gpu,J_fz_gpu,J_fbz_gpu,Area_gpu,GIF.FixedIndices,FixedValues_gpu,SPDHessian, 0);
 
@@ -67,7 +76,11 @@ for i=1:100
     GIF.foldoversIndices1 = foldoversIndices;
 
     % ****solve****
-    H1=[H([numDOF1:(numDOFScaffold-1)], [numDOF1:(numDOFScaffold-1)]), H([numDOF1:(numDOFScaffold-1)], [(almostAllVars+1):totVars]); H([(almostAllVars+1):totVars], [numDOF1:(numDOFScaffold-1)]), H([(almostAllVars+1):totVars], [(almostAllVars+1):totVars])];
+    if use_torch
+        H1=H; % The same submatrix is selected on-device before downloading.
+    else
+        H1=[H([numDOF1:(numDOFScaffold-1)], [numDOF1:(numDOFScaffold-1)]), H([numDOF1:(numDOFScaffold-1)], [(almostAllVars+1):totVars]); H([(almostAllVars+1):totVars], [numDOF1:(numDOFScaffold-1)]), H([(almostAllVars+1):totVars], [(almostAllVars+1):totVars])];
+    end
     G1=[G([numDOF1:(numDOFScaffold-1)], :);G([(almostAllVars+1):totVars], :)];
 
     [R,p]=chol(H1);
@@ -123,6 +136,11 @@ for i=1:100
     x_initial=x_initial+t*d;
     iter=iter+1;
 
+    if ~isempty(getenv('BCP_COMPARE_TRACE_PATH'))
+        fprintf(1, 'BCP_TRACE_STEP remesh=%d step=%d iter=%d E=%.17g Eprev=%.17g normG=%.17g normG1=%.17g normD=%.17g t=%.17g tMax=%.17g stepNorm=%.17g foldovers=%d\n', ...
+            timesRemeshed, i, iter, E, Eprev, norm(G), norm(G1), norm(d), t, tMax, t * norm(d), numel(foldoversIndices));
+    end
+
     temp_arr1 = x_initial(numDOF1:(numDOFScaffold-1));
     temp_arr2 = x_initial((almostAllVars+1):totVars);
     radius_squared = x_initial(1, 1) * x_initial(1, 1) + x_initial(numDOFScaffold, 1) * x_initial(numDOFScaffold, 1);
@@ -150,6 +168,10 @@ arr1=[E];
 GIF.newtonIters=iter;
 GIF.NewtonFinalEnergy=E;
 rate = abs(GIF.initTotalEnergy - E) / GIF.initTotalEnergy;
+if ~isempty(getenv('BCP_COMPARE_TRACE_PATH'))
+    fprintf(1, 'BCP_TRACE_REMESH remesh=%d newtonIters=%d initE=%.17g finalE=%.17g rate=%.17g\n', ...
+        timesRemeshed, iter, GIF.initTotalEnergy, E, rate);
+end
 
 meanU = mean(x_initial(numDOF1:(numDOFScaffold-1)));
 meanV = mean(x_initial((almostAllVars+1):totVars));

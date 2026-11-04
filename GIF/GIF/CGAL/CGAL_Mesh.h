@@ -11,6 +11,38 @@ class Polyhedron : public CGAL::Polyhedron_3<kernel, items>
 {
 public:
 
+	using Base = CGAL::Polyhedron_3<kernel, items>;
+	using Vertex_handle = typename Base::Vertex_handle;
+	using Vertex_const_handle = typename Base::Vertex_const_handle;
+	using Halfedge_handle = typename Base::Halfedge_handle;
+	using Halfedge_const_handle = typename Base::Halfedge_const_handle;
+	using Facet_handle = typename Base::Facet_handle;
+	using Facet_const_handle = typename Base::Facet_const_handle;
+	using Vertex_iterator = typename Base::Vertex_iterator;
+	using Vertex_const_iterator = typename Base::Vertex_const_iterator;
+	using Halfedge_iterator = typename Base::Halfedge_iterator;
+	using Halfedge_const_iterator = typename Base::Halfedge_const_iterator;
+	using Facet_iterator = typename Base::Facet_iterator;
+	using Facet_const_iterator = typename Base::Facet_const_iterator;
+	using Edge_iterator = typename Base::Edge_iterator;
+	using Edge_const_iterator = typename Base::Edge_const_iterator;
+	using Base::vertices_begin;
+	using Base::vertices_end;
+	using Base::halfedges_begin;
+	using Base::halfedges_end;
+	using Base::facets_begin;
+	using Base::facets_end;
+	using Base::edges_begin;
+	using Base::edges_end;
+	using Base::border_edges_begin;
+	using Base::size_of_vertices;
+	using Base::size_of_halfedges;
+	using Halfedge_around_facet_circulator = typename Base::Halfedge_around_facet_circulator;
+	using Face = typename Base::Facet;
+	using FBase = typename Face::Base;
+	using Base::size_of_facets;
+	using Base::size_of_border_halfedges;
+
 	Polyhedron() {}
 	virtual ~Polyhedron() {}
 
@@ -141,7 +173,7 @@ Polyhedron<kernel, items>::vertex(unsigned int index) const
 template<class kernel, class items>
 bool Polyhedron<kernel, items>::hasValidMetric() const
 {
-	for (Face_const_iterator f = facets_begin(); f != facets_end(); f++)
+	for (Facet_const_iterator f = facets_begin(); f != facets_end(); f++)
 	{
 		if (!f->hasValidMetric())
 		{
@@ -189,7 +221,7 @@ void Polyhedron<kernel, items>::getFixedVertexIndexMap(std::vector<Vertex_const_
 
 	for (Vertex_const_iterator vi = vertices_begin(); vi != vertices_end(); ++vi)
 	{
-		if (vi->state() == Vertex::Base::FIXED_VERTEX)
+		if (!vi->isFree())
 		{
 			fixedVertices.push_back(vi);
 		}
@@ -241,7 +273,7 @@ void Polyhedron<kernel, items>::getFreeVertexIndexMap(std::vector<Vertex_const_h
 
 	for (Vertex_const_iterator vi = vertices_begin(); vi != vertices_end(); ++vi)
 	{
-		if (vi->state() == Vertex::Base::FREE_VERTEX)
+		if (vi->isFree())
 		{
 			freeVertices.push_back(vi);
 		}
@@ -294,12 +326,12 @@ int Polyhedron<kernel, items>::fixBorderFaces()
 	{
 		if (fi->is_border())
 		{
-			fi->state() = Face::Base::FIXED_FACE;
-			numBorderVertices++;
+			fi->state() = FBase::FIXED_FACE;
+			numBorderFaces++;
 		}
 		else
 		{
-			fi->state() = Face::Base::FREE_FACE;
+			fi->state() = FBase::FREE_FACE;
 		}
 	}
 	bool res = updateVerticesLocalIndices();
@@ -414,11 +446,11 @@ double Polyhedron<kernel, items>::area() const
 }
 
 
-//uses Gauss–Bonnet theorem to compute the Euler characteristic number of a mesh (with or without boundary).
+//uses Gaussï¿½Bonnet theorem to compute the Euler characteristic number of a mesh (with or without boundary).
 //the function sums the integrated Gaussian curvature (angle deficit without area normalization).
 //the input parameter useTargetMetric determines whether the curvature is being computed based on the 3D embedding or based on the prescribed target metric (edge lengths).
 template<class kernel, class items>
-double Polyhedron<kernel, items>::eulerNumber(bool useTargetMetric = false) const
+double Polyhedron<kernel, items>::eulerNumber(bool useTargetMetric) const
 {
 	double sumOfAngles = 0.0;
 
@@ -756,7 +788,7 @@ bool Polyhedron<kernel, items>::updateFacesLocalIndices()
 		}
 	}
 
-	if (numFixed + numFree == size_of_faces())
+	if (numFixed + numFree == size_of_facets())
 	{
 		return true;
 	}
